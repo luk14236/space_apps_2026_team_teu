@@ -43,17 +43,52 @@ _TBD — to be defined by the team._
 
 ## Tech stack
 
-_TBD._
+- **Python 3.10+**
+- **Dash 3 + Plotly 6**: app, linked charts, MapLibre map (`Choroplethmap` / `Scattermap`)
+- **DuckDB + Parquet**: fast queries over ~73 million hotspots, no database server
+- **Shapely 2**: assigns each Argentine hotspot to its province and department
+- **pytest**: smoke tests on the processed data
+
+```
+app/
+  main.py            entry point (python -m app.main)
+  config.py          paths and server settings (env vars)
+  data/geo.py        boundaries (data/geo/*.geojson)
+  data/repository.py every query the UI uses (the UI never writes SQL)
+  ui/layout.py       page layout
+  ui/callbacks.py    one controller updates the state; renderers draw from it
+  ui/figures.py      Plotly figures (calendar, anomaly, harmonization, timeline, map helpers)
+  assets/style.css
+scripts/
+  build_geo.py       downloads and simplifies boundaries -> data/geo/
+  prepare_data.py    data team CSV -> data/processed/*.parquet + meta.json
+tests/
+```
 
 ## Getting started
 
-_TBD._
-
 ```bash
-# clone
 git clone <repo-url>
 cd space_apps_2026_team_teu
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 1. put the data team's delivery in data/raw/ (focos_brutos_*.csv, focos_mensais_*.csv)
+python scripts/prepare_data.py            # or: --raw /path/to/output
+# 2. run the app
+python -m app.main                        # http://127.0.0.1:8050
+# tests
+pytest -q
 ```
+
+`data/geo/` (boundaries) is versioned. `data/raw/` and `data/processed/` are not; regenerate them with the script.
+Settings: `FOCOS_PROCESSED_DIR`, `FOCOS_GEO_DIR`, `HOST`, `PORT`, `DASH_DEBUG=1`.
+
+### Data contract
+
+`prepare_data.py` requires `pais, data_hora_gmt, latitude, longitude, satelite, sensor, frp` and uses these optional columns when present:
+`peso_harm` (harmonized weight per hotspot; enables the *Harmonized* series), `confidence`, `daynight`, `type`.
+Missing columns and data issues are listed in `data/processed/meta.json` and shown in the app header.
 
 ## Team
 

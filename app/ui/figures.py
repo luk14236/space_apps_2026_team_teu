@@ -1,0 +1,208 @@
+"""Plotly figures for the dashboard. AI-assisted: written with Claude (Anthropic), reviewed by the team."""
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+MESES_L = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+
+FG, MUTED, LINE, SURF = "#1a1f25", "#5b6570", "#d9dde2", "#ffffff"
+ACCENT, ACCENT_SOFT = "#c2410c", "rgba(194,65,12,.18)"
+GOOD, CRIT = "#23704a", "#b42318"
+MODIS_C, VIIRS_C = "#3c6db3", "#e07a1f"
+RAMP = ["#fbeec9", "#f7cf7f", "#ef9a45", "#d9582a", "#a3261d", "#5c0f18"]
+RAMP_SCALE = [[0, "#eef0f3"], [0.0001, RAMP[0]], [0.2, RAMP[1]], [0.4, RAMP[2]], [0.6, RAMP[3]], [0.8, RAMP[4]], [1, RAMP[5]]]
+SAT_C = {"TERRA": "#3c6db3", "AQUA": "#11897d", "SNPP": "#e07a1f", "NOAA20": "#b8336a", "NOAA21": "#7a5cc8"}
+FONT = dict(family="IBM Plex Sans, system-ui, sans-serif", size=11, color=MUTED)
+
+
+def fmt(n) -> str:
+    return f"{n:,.0f}".replace(",", ".")
+
+
+def fmt1(n) -> str:
+    return f"{n:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def fmtk(n) -> str:
+    return fmt(n / 1000) + "k" if n >= 10000 else (fmt1(n / 1000) + "k" if n >= 1000 else fmt(n))
+
+
+def base_layout(fig: go.Figure, height: int, **kw) -> go.Figure:
+    opts = dict(height=height, margin=dict(l=40, r=10, t=8, b=26), paper_bgcolor=SURF, plot_bgcolor=SURF,
+                font=FONT, showlegend=False, hoverlabel=dict(bgcolor=FG, font_color=SURF, font_size=12, bordercolor=FG),
+                dragmode=False)
+    fig.update_layout(**(opts | kw))
+    fig.update_xaxes(showgrid=False, zeroline=False, linecolor=LINE, tickfont=dict(family="IBM Plex Mono, monospace", size=10))
+    fig.update_yaxes(gridcolor=LINE, zeroline=False, tickfont=dict(family="IBM Plex Mono, monospace", size=10))
+    return fig
+
+
+# ------------------------------------------------------------------ calendar (Greenpeace style, with margins)
+def calendar(m: pd.DataFrame, values: pd.Series, t0: int, t1: int, cal: tuple, viirs_year: int = 2012) -> go.Figure:
+    y0, y1 = int(m["ano"].min()), int(m["ano"].max())
+    years = list(range(y0, y1 + 1))
+    z = np.full((len(years), 12), np.nan)
+    for mi, v in values.items():
+        z[mi // 12 - y0, mi % 12] = v
+    inrange = (values.index >= t0) & (values.index <= t1)
+    vr = values[inrange]
+    month_mean = [vr[vr.index % 12 == k].mean() if (vr.index % 12 == k).any() else 0 for k in range(12)]
+    year_tot = [vr[vr.index // 12 == y].sum() for y in years]
+    zmax = float(np.nanquantile(z[z > 0], 0.97)) if np.any(z > 0) else 1
+    med = [np.nanmedian(z[:, k]) for k in range(12)]
+    txt = [[f"<b>{MESES_L[k]} de {y}</b><br>{fmt(z[i, k])} focos<br>{'+' if z[i, k] >= med[k] else ''}{fmt((z[i, k] - med[k]) / med[k] * 100) if med[k] else 0}% vs. mediana do mês"
+            if not np.isnan(z[i, k]) else "" for k in range(12)] for i, y in enumerate(years)]
+
+    fig = make_subplots(rows=2, cols=2, column_widths=[0.8, 0.2], row_heights=[0.12, 0.88], shared_xaxes="columns",
+                        shared_yaxes="rows", horizontal_spacing=0.02, vertical_spacing=0.015)
+    fig.add_trace(go.Bar(x=list(range(1, 13)), y=month_mean, marker_color=ACCENT, opacity=0.85, customdata=[["month", k + 1] for k in range(12)],
+                         hovertemplate="<b>%{x}</b> média de %{y:,.0f} focos/mês<br>clique para filtrar<extra></extra>"), 1, 1)
+    fig.add_trace(go.Heatmap(z=z, x=list(range(1, 13)), y=years, colorscale=RAMP_SCALE, zmin=0, zmax=zmax, showscale=False, xgap=1.5, ygap=1.5,
+                             text=txt, hovertemplate="%{text}<extra></extra>", customdata=[[["cell", y, k + 1] for k in range(12)] for y in years]), 2, 1)
+    fig.add_trace(go.Bar(x=year_tot, y=years, orientation="h", marker_color=ACCENT, opacity=0.85, customdata=[["year", y] for y in years],
+                         hovertemplate="<b>%{y}</b>: %{x:,.0f} focos no período<br>clique para filtrar<extra></extra>"), 2, 2)
+    base_layout(fig, 560)
+    fig.update_layout(margin=dict(l=40, r=8, t=6, b=24), bargap=0.25)
+    fig.update_xaxes(tickvals=list(range(1, 13)), ticktext=MESES, side="bottom", row=2, col=1, showticklabels=True)
+    fig.update_xaxes(showticklabels=False, row=1, col=1)
+    fig.update_xaxes(showticklabels=False, showgrid=False, row=2, col=2)
+    fig.update_yaxes(autorange="reversed", dtick=1, showgrid=False, row=2, col=1)
+    fig.update_yaxes(showticklabels=False, showgrid=False, row=1, col=1)
+    fig.update_yaxes(showgrid=False, row=2, col=2)
+    shapes = [dict(type="line", xref="x3", yref="y3", x0=0.5, x1=12.5, y0=viirs_year - 0.5, y1=viirs_year - 0.5,
+                   line=dict(color=ACCENT, width=1.6, dash="dash"))]
+    for y in years:  # dim years outside the selected period
+        if y * 12 + 11 < t0 or y * 12 > t1:
+            shapes.append(dict(type="rect", xref="x3", yref="y3", x0=0.5, x1=12.5, y0=y - 0.5, y1=y + 0.5, fillcolor="rgba(255,255,255,.65)", line_width=0))
+    if cal and cal[0] == "cell":
+        shapes.append(dict(type="rect", xref="x3", yref="y3", x0=cal[2] - 0.5, x1=cal[2] + 0.5, y0=cal[1] - 0.5, y1=cal[1] + 0.5, line=dict(color=FG, width=2.5)))
+    elif cal and cal[0] == "month":
+        shapes.append(dict(type="rect", xref="x3", yref="y3", x0=cal[1] - 0.5, x1=cal[1] + 0.5, y0=y0 - 0.5, y1=y1 + 0.5, line=dict(color=FG, width=2)))
+    elif cal and cal[0] == "year":
+        shapes.append(dict(type="rect", xref="x3", yref="y3", x0=0.5, x1=12.5, y0=cal[1] - 0.5, y1=cal[1] + 0.5, line=dict(color=FG, width=2)))
+    fig.update_layout(shapes=shapes)
+    return fig
+
+
+def calendar_legend(values: pd.Series) -> list[tuple[str, str]]:
+    v = values[values > 0]
+    zmax = float(v.quantile(0.97)) if len(v) else 1
+    return [(RAMP[i], "≤" + fmtk(zmax * (i + 1) / 6) if i < 5 else "+") for i in range(6)]
+
+
+# ------------------------------------------------------------------ anomaly (EFFIS style)
+def cumulative(values: pd.Series, fy: int, y_first_full: int, y_last: int) -> tuple[go.Figure, str]:
+    def cum(y):
+        a = [values.get(y * 12 + k, np.nan) for k in range(12)]
+        return np.nancumsum(a) if not np.all(np.isnan(a)) else np.full(12, np.nan)
+    hist = np.array([cum(y) for y in range(y_first_full, y_last + 1) if y != fy])
+    cur = cum(fy)
+    mn, mx = np.nanmin(hist, 0), np.nanmax(hist, 0)
+    p25, p50, p75 = (np.nanquantile(hist, q, 0) for q in (0.25, 0.5, 0.75))
+    x = MESES
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=mx, mode="lines", line_width=0, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=mn, mode="lines", fill="tonexty", fillcolor="rgba(91,101,112,.13)", line_width=0, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=p75, mode="lines", line_width=0, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=p25, mode="lines", fill="tonexty", fillcolor=ACCENT_SOFT, line_width=0, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=p50, mode="lines", line=dict(color=MUTED, width=1.5, dash="dash"), hovertemplate="mediana: %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=x, y=cur, mode="lines+markers", line=dict(color=ACCENT, width=3), marker=dict(size=6, color=ACCENT),
+                             customdata=np.stack([mn, mx, p50], 1),
+                             hovertemplate=f"<b>{fy} até %{{x}}</b><br>%{{y:,.0f}} acumulados<br>mediana %{{customdata[2]:,.0f}} · faixa %{{customdata[0]:,.0f}}–%{{customdata[1]:,.0f}}<extra></extra>"))
+    base_layout(fig, 250)
+    last = int(np.nanmax(np.where(~np.isnan(cur))[0])) if np.any(~np.isnan(cur)) else 11
+    at = hist[:, last]
+    rank = int((at > cur[last]).sum()) + 1
+    d = (cur[last] - p50[last]) / p50[last] * 100 if p50[last] else 0
+    pc = int(round((at < cur[last]).mean() * 100))
+    call = (f"<b>{fy}</b> até {MESES_L[last]}: <b>{fmt(cur[last])}</b> focos, {'+' if d >= 0 else ''}{fmt(d)}% contra a mediana. "
+            f"É o <b>{rank}º</b> maior acumulado em {len(at) + 1} temporadas (percentil {pc}).")
+    return fig, call
+
+
+def monthly_anomaly(values: pd.Series, fy: int, y_first_full: int, y_last: int) -> go.Figure:
+    pct, txt = [], []
+    for k in range(12):
+        v = values.get(fy * 12 + k, np.nan)
+        hist = [values.get(y * 12 + k, np.nan) for y in range(y_first_full, y_last + 1) if y != fy]
+        med = np.nanmedian(hist) if hist else np.nan
+        p = (v - med) / med * 100 if med and not np.isnan(v) else np.nan
+        pct.append(p)
+        txt.append(f"<b>{MESES_L[k]} de {fy}</b><br>{fmt(v) if not np.isnan(v) else '—'} focos · mediana {fmt(med) if not np.isnan(med) else '—'}<br>{'+' if p >= 0 else ''}{fmt(p)}%<br>clique para ver no mapa" if not np.isnan(p) else "")
+    cols = [CRIT if (p or 0) > 0 else GOOD for p in pct]
+    fig = go.Figure(go.Bar(x=MESES, y=pct, marker_color=cols, opacity=0.9, text=txt, hovertemplate="%{text}<extra></extra>",
+                           customdata=[["cell", fy, k + 1] for k in range(12)]))
+    base_layout(fig, 150)
+    fig.update_yaxes(ticksuffix="%", zeroline=True, zerolinecolor=MUTED)
+    return fig
+
+
+# ------------------------------------------------------------------ harmonization
+def harmonization(m: pd.DataFrame, has_harm: bool, viirs_year: int = 2012) -> tuple[go.Figure, str]:
+    y = m.groupby("ano")[["raw", "modis", "viirs", "harm"]].sum(min_count=1)
+    fig = go.Figure()
+    if has_harm and y["harm"].notna().any():
+        fig.add_trace(go.Bar(x=y.index, y=y["harm"], marker_color=RAMP[3], name="Harmonizada", hovertemplate="%{x}: %{y:,.0f} harmonizados<extra></extra>"))
+        fig.add_trace(go.Scatter(x=y.index, y=y["raw"], line=dict(color=VIIRS_C, width=2, dash="dash"), name="Bruta", hovertemplate="bruta %{y:,.0f}<extra></extra>"))
+    else:
+        fig.add_trace(go.Bar(x=y.index, y=y["modis"], marker_color=MODIS_C, name="MODIS", hovertemplate="%{x} · MODIS: %{y:,.0f}<extra></extra>"))
+        fig.add_trace(go.Bar(x=y.index, y=y["viirs"], marker_color=VIIRS_C, name="VIIRS", hovertemplate="%{x} · VIIRS: %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=y.index, y=y["modis"], line=dict(color=MODIS_C, width=2), name="Só MODIS", hovertemplate="só MODIS %{y:,.0f}<extra></extra>"))
+    base_layout(fig, 230, barmode="stack")
+    fig.add_vline(x=viirs_year - 0.5, line=dict(color=ACCENT, dash="dash", width=1.5))
+    fig.add_annotation(x=viirs_year - 0.4, y=1, yref="paper", text="VIIRS entra", showarrow=False, xanchor="left", font=dict(color=ACCENT, size=10))
+    r0, r1 = y["raw"].get(viirs_year - 1, 0), y["raw"].get(viirs_year, 0)
+    jump = (r1 - r0) / r0 * 100 if r0 else 0
+    note = f"De {viirs_year - 1} para {viirs_year} a soma bruta salta <b>{'+' if jump >= 0 else ''}{fmt(jump)}%</b>, só pela entrada do VIIRS."
+    if not has_harm:
+        note += " A série harmonizada aparece aqui quando o time de dados entregar a coluna <code>peso_harm</code>."
+    return fig, note
+
+
+# ------------------------------------------------------------------ timeline (brush)
+def timeline(values: pd.Series, t0: int, t1: int, cal_ok) -> go.Figure:
+    x = values.index.to_numpy()
+    on = [(t0 <= k <= t1) and cal_ok(k) for k in x]
+    labels = [f"{MESES_L[k % 12]} de {k // 12}" for k in x]
+    fig = go.Figure(go.Bar(x=x, y=values.to_numpy(), marker_color=[ACCENT if o else "#c9cfd6" for o in on], marker_line_width=0,
+                           customdata=labels, hovertemplate="%{customdata}: %{y:,.0f} focos<extra></extra>"))
+    years = range(x.min() // 12 + 1, x.max() // 12 + 1)
+    base_layout(fig, 110, dragmode="select", selectdirection="h", bargap=0.1)
+    fig.update_layout(margin=dict(l=8, r=8, t=4, b=20), newselection=dict(line=dict(color=ACCENT)))
+    fig.update_xaxes(tickvals=[y * 12 for y in years if y % 5 == 0], ticktext=[str(y) for y in years if y % 5 == 0], range=[x.min() - 0.5, x.max() + 0.5])
+    fig.update_yaxes(visible=False, fixedrange=True)
+    fig.add_vrect(x0=t0 - 0.5, x1=t1 + 0.5, fillcolor=ACCENT_SOFT, line_width=1, line_color=ACCENT, layer="below")
+    return fig
+
+
+# ------------------------------------------------------------------ map
+def zoom_for(bbox, width_px: int = 700, height_px: int = 560) -> tuple[dict, float]:
+    x0, y0, x1, y1 = bbox
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    def merc(lat):
+        return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
+    dx = max(x1 - x0, 0.05) / 360
+    dy = max(merc(y1) - merc(y0), 0.001) / (2 * math.pi)
+    z = math.log2(min(width_px / 512 / dx, height_px / 512 / dy)) - 0.2  # MapLibre uses 512 px tiles
+    return {"lon": cx, "lat": cy}, max(1.5, min(13, z))
+
+
+def choropleth(fc: dict, ids, z, custom, name: str, opacity=0.85, line_w=0.6, colorscale=None, zmax=None):
+    return go.Choroplethmap(geojson=fc, locations=list(ids), z=list(z), featureidkey="id", colorscale=colorscale or RAMP_SCALE,
+                            zmin=0, zmax=zmax, showscale=False, marker_opacity=opacity, marker_line_width=line_w, marker_line_color="#8f877b",
+                            customdata=custom, hovertemplate="%{customdata[2]}<extra></extra>", name=name)
+
+
+def grid_geojson(df: pd.DataFrame, deg: float) -> dict:
+    feats = []
+    for gx, gy in zip(df["gx"], df["gy"]):
+        x0, y0 = gx * deg, gy * deg
+        feats.append({"type": "Feature", "id": f"{gx}:{gy}", "properties": {},
+                      "geometry": {"type": "Polygon", "coordinates": [[[x0, y0], [x0 + deg, y0], [x0 + deg, y0 + deg], [x0, y0 + deg], [x0, y0]]]}})
+    return {"type": "FeatureCollection", "features": feats}
