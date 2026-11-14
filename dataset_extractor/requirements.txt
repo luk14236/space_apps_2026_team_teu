@@ -1,0 +1,10 @@
+# Download do manifesto e dos CSVs FIRMS
+requests>=2.31
+pandas>=2.0
+tqdm>=4.66
+
+# Tratamento e banco DuckDB
+duckdb>=1.0
+
+# Suíte de testes
+pytest>=8.0
