@@ -80,7 +80,7 @@ class Sala:
         """Hotspots of the last `win` days (most recent first), optionally restricted to some departments."""
         D = self.daily()["D"]
         where, prm = ("dep_id IN (" + ",".join("?" * len(deps)) + ")", list(deps)) if deps else ("TRUE", [])
-        df = self.repo.q(f"""SELECT lat, lon, ts, CAST(ts AS DATE) dia, satelite, frp FROM focos_arg
+        df = self.repo.q(f"""SELECT lat, lon, ts, CAST(ts AS DATE) dia, satelite, frp, dep_id FROM focos_arg
                              WHERE {where} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT {int(limit)}""",
                          prm + [pd.Timestamp(D - timedelta(days=win - 1)), pd.Timestamp(D + timedelta(days=1))])
         df["dia"] = pd.to_datetime(df["dia"]).dt.date
@@ -122,6 +122,8 @@ def _frame(A: pd.DataFrame, E: pd.DataFrame, F: pd.DataFrame, win: int) -> pd.Da
     prev = a[:, -2 * win:-win].sum(1)
     pers = np.zeros(len(a), dtype=int)
     for i, row in enumerate(a):
+        if len(row) > 1 and row[-1] <= 0:  # the last day may still be arriving (NRT): count back from the day before
+            row = row[:-1]
         z = np.where(row[::-1] <= 0)[0]
         pers[i] = z[0] if len(z) else len(row)
     df = pd.DataFrame({"R": R, "Ex": Ex, "prev": prev, "pers": pers, "today": a[:, -1], "frp": F.to_numpy()[:, -win:].max(1)}, index=A.index)

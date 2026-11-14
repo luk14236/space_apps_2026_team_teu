@@ -64,3 +64,30 @@ def test_metrics_consistent(app):
     deps, provs = s.metrics(7)
     assert abs(deps["R"].sum() - provs["R"].sum()) < 1e-6  # provinces are the sum of their departments
     assert set(deps["status"]) <= {"crit", "alert", "watch", "ok", "below"}
+
+
+def _ids(node, acc):
+    """Collect every component id in a rendered tree."""
+    if isinstance(node, (list, tuple)):
+        for n in node:
+            _ids(n, acc)
+        return acc
+    if hasattr(node, "to_plotly_json"):
+        cid = getattr(node, "id", None)
+        if cid is not None:
+            acc.append(str(sorted(cid.items())) if isinstance(cid, dict) else cid)
+        _ids(getattr(node, "children", None), acc)
+    return acc
+
+
+@pytest.mark.parametrize("kind", ["ar", "dep"])
+def test_focus_buttons_have_unique_ids(app, kind):
+    """Duplicate ids made clicks on alerts/queue/crumbs get lost: the same department shows up in several lists."""
+    from app.data.geo import Geo
+    from app.ui.sala import sala_layout
+    uid = Geo(config.GEO_DIR).deps_of["AR-X"][0] if kind == "dep" else ""
+    out = _render(app)({"win": 7, "kind": kind, "uid": uid, "shape": [], "hl": None, "sort": ["score", -1]}, "pan")
+    from app.data.repository import Repository
+    page = sala_layout(Repository(config.PROCESSED_DIR, Geo(config.GEO_DIR)))  # static buttons ("Argentina inteira") live here
+    ids = _ids([out[0], out[2], out[3], out[9], out[13], page], [])
+    assert len(ids) == len(set(ids)), [i for i in ids if ids.count(i) > 1][:5]

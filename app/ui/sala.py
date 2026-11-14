@@ -54,16 +54,17 @@ def fx(r):
     return (fmt(r) if r >= 10 else fmt1(r)) + "×"
 
 
-def go_btn(kind, uid, children, cls="", hl=None):
-    return html.Button(children, id={"type": "sala-go", "k": kind, "id": uid if hl is None else f"{uid}|{hl}"}, n_clicks=0, className=cls)
+def go_btn(src, kind, uid, children, cls="", hl=None):
+    """Focus button. `src` keeps ids unique: the same department can be in the alerts, the queue and today's list at once."""
+    return html.Button(children, id={"type": "sala-go", "s": src, "k": kind, "id": uid if hl is None else f"{uid}|{hl}"}, n_clicks=0, className=cls)
 
 
 BODIES = {
     "map": lambda: [html.Div(className="row", children=[
         dcc.RadioItems(id="sala-tool", options=[{"label": "✋ Navegar", "value": "pan"}, {"label": "▭ Retângulo", "value": "select"},
                                                  {"label": "⬠ Polígono", "value": "lasso"}], value="pan", className="seg small", inline=True),
-        html.Button("Argentina inteira", id={"type": "sala-go", "k": "ar", "id": ""}, n_clicks=0, className="mini")]),
-        dcc.Graph(id="sala-map", config={"scrollZoom": True, "displaylogo": False, "doubleClick": False}, className="smap"),
+        go_btn("map", "ar", "", "Argentina inteira", cls="mini")]),
+        dcc.Graph(id="sala-map", config={"scrollZoom": True, "displaylogo": False, "doubleClick": False, "displayModeBar": False}, className="smap"),
         html.Div(id="sala-maplegend", className="maplegend")],
     "tri": lambda: [html.Div(id="sala-tri", className="tbl"),
                     html.P("Clique no título de uma coluna para ordenar; numa linha para focar.", className="note")],
@@ -108,7 +109,7 @@ def sala_layout(repo: Repository) -> html.Div:
     return html.Div(className="app sala", children=[
         dcc.Store(id="sala-st", data={"win": 7, "kind": "ar", "uid": "", "shape": [], "hl": None, "sort": ["score", -1]}),
         dcc.Store(id="sala-layout", storage_type="local", data={"preset": "coord", "layout": PRESETS["coord"]}),
-        dcc.Store(id="sala-edit", data=False),
+        dcc.Store(id="sala-edit", data=False), dcc.Store(id="sala-tool-sync"),
         html.Header(className="top", children=[
             html.Div(className="brand", children=[html.H1("Sala de Situação · Focos de Calor"),
                                                    html.Small(f"Argentina · último dia com dados: {D:%d/%m/%Y}")]),
@@ -147,29 +148,31 @@ def register_sala(app, repo: Repository) -> None:
     geo = repo.geo
 
     # ------------------------------------------------------------------ layout (presets + edit mode)
-    @app.callback(Output("sala-layout", "data"),
+    @app.callback(Output("sala-layout", "data"), Output("sala-preset", "value"),
                   Input("sala-preset", "value"), Input({"type": "sala-tool", "w": ALL, "a": ALL}, "n_clicks"),
                   Input({"type": "sala-add", "w": ALL}, "n_clicks"), Input({"type": "sala-reset", "x": ALL}, "n_clicks"),
-                  State("sala-layout", "data"), prevent_initial_call=True)
+                  State("sala-layout", "data"))
     def edit_layout(preset, tools, adds, reset, data):
         data = dict(data or {"preset": "coord", "layout": PRESETS["coord"]})
         lay = [list(x) for x in data["layout"]]
         tid = ctx.triggered_id
+        if tid is None:  # page load: show the preset saved in this browser
+            return no_update, data.get("preset", "coord")
         if tid == "sala-preset":
             if preset == data.get("preset") or preset not in PRESETS:
-                return no_update
-            return {"preset": preset, "layout": PRESETS[preset]}
+                return no_update, no_update
+            return {"preset": preset, "layout": PRESETS[preset]}, no_update
         if not ctx.triggered or not ctx.triggered[0]["value"]:
-            return no_update
+            return no_update, no_update
         if tid["type"] == "sala-reset":
             p = data.get("preset") if data.get("preset") in PRESETS else "coord"
-            return {"preset": p, "layout": PRESETS[p]}
+            return {"preset": p, "layout": PRESETS[p]}, p
         if tid["type"] == "sala-add":
             lay.append([tid["w"], "M"])
         else:
             k = next((i for i, x in enumerate(lay) if x[0] == tid["w"]), None)
             if k is None:
-                return no_update
+                return no_update, no_update
             a = tid["a"]
             if a == "left" and k > 0:
                 lay[k - 1], lay[k] = lay[k], lay[k - 1]
@@ -179,14 +182,14 @@ def register_sala(app, repo: Repository) -> None:
                 lay[k][1] = SIZES[(SIZES.index(lay[k][1]) + 1) % 4]
             elif a == "hide":
                 lay.pop(k)
-        return {"preset": "custom", "layout": lay}
+        return {"preset": "custom", "layout": lay}, "custom"
 
     @app.callback(Output("sala-edit", "data"), Output("sala-editbtn", "children"), Input("sala-editbtn", "n_clicks"), State("sala-edit", "data"), prevent_initial_call=True)
     def toggle_edit(n, on):
         return not on, "Concluir edição" if not on else "Editar painel"
 
     @app.callback([Output(f"w-{w}", "className") for w in WIDGETS] + [Output(f"w-{w}", "style") for w in WIDGETS] +
-                  [Output("sala-edits", "children"), Output("sala-body", "className"), Output("sala-preset", "value")],
+                  [Output("sala-edits", "children"), Output("sala-body", "className")],
                   Input("sala-layout", "data"), Input("sala-edit", "data"))
     def apply_layout(data, editing):
         lay = (data or {}).get("layout") or PRESETS["coord"]
@@ -200,11 +203,11 @@ def register_sala(app, repo: Repository) -> None:
                      html.Button("Restaurar o painel", id={"type": "sala-reset", "x": 1}, n_clicks=0, className="mini")]
         else:
             edits = []
-        return cls + sty + [edits, "sala-body" + (" editing" if editing else ""), (data or {}).get("preset", "coord")]
+        return cls + sty + [edits, "sala-body" + (" editing" if editing else "")]
 
     # ------------------------------------------------------------------ scope / selection state
     @app.callback(Output("sala-st", "data"), Output("sala-search", "value"),
-                  Input("sala-win", "value"), Input({"type": "sala-go", "k": ALL, "id": ALL}, "n_clicks"),
+                  Input("sala-win", "value"), Input({"type": "sala-go", "s": ALL, "k": ALL, "id": ALL}, "n_clicks"),
                   Input("sala-map", "clickData"), Input("sala-map", "selectedData"), Input("sala-quad", "clickData"),
                   Input("sala-strip", "clickData"), Input("sala-search", "value"), Input({"type": "sala-sort", "k": ALL}, "n_clicks"),
                   State("sala-st", "data"), prevent_initial_call=True)
@@ -213,6 +216,9 @@ def register_sala(app, repo: Repository) -> None:
         tid = ctx.triggered_id
         prop = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
         val = ctx.triggered[0]["value"] if ctx.triggered else None
+        # buttons re-created by a render fire all at once with n_clicks=0: only a single real click counts
+        if isinstance(tid, dict) and (len(ctx.triggered) != 1 or not val):
+            return no_update, no_update
         reset_search = no_update
         if tid == "sala-win":
             st["win"] = win
@@ -246,6 +252,11 @@ def register_sala(app, repo: Repository) -> None:
         elif tid in ("sala-map", "sala-quad", "sala-strip"):
             data = {"sala-map": mapc, "sala-quad": quadc, "sala-strip": stripc}[tid]
             cd = data and data["points"][0].get("customdata")
+            if cd and cd[0] == "pt":  # a hotspot sits on top of the areas: focus the area it belongs to
+                dep = geo.departamentos.get(cd[1])
+                if not dep:
+                    return no_update, no_update
+                cd = ["prov", dep.parent] if st["kind"] == "ar" else ["dep", dep.id]
             if not cd or cd[0] not in ("prov", "dep"):
                 return no_update, no_update
             st.update(kind=cd[0], uid=cd[1], shape=[], hl=None)
@@ -253,19 +264,19 @@ def register_sala(app, repo: Repository) -> None:
             return no_update, no_update
         return st, reset_search
 
-    @app.callback(Output("sala-map", "figure", allow_duplicate=True), Input("sala-tool", "value"), State("sala-map", "figure"), prevent_initial_call=True)
-    def set_tool(tool, fig):
-        if not fig:
-            return no_update
-        fig["layout"]["dragmode"] = tool
-        return fig
+    app.clientside_callback(  # switch pan / box / lasso in the browser instead of resending the whole figure
+        """function(tool){const g=document.querySelector('#sala-map .js-plotly-plot');
+           if(g&&window.Plotly){Plotly.relayout(g,{dragmode:tool});} return tool;}""",
+        Output("sala-tool-sync", "data"), Input("sala-tool", "value"), prevent_initial_call=True)
+
+    dep_geoms = {}
 
     def shape_deps(shape):
-        poly = shapely.Polygon(shape)
-        deps = [d.id for d in geo.departamentos.values() if poly.contains(shapely.Point(d.centroid))]
-        if not deps:
-            c = poly.centroid
-            deps = [d.id for d in geo.departamentos.values() if shapely.geometry.shape(d.feature["geometry"]).contains(c)][:1]
+        """Departments the drawn area touches (the daily metrics exist per department)."""
+        if not dep_geoms:
+            dep_geoms.update({k: shapely.geometry.shape(d.feature["geometry"]) for k, d in geo.departamentos.items()})
+        poly = shapely.Polygon(shape).buffer(0)
+        deps = [k for k, g in dep_geoms.items() if g.intersects(poly)]
         return deps or [min(geo.departamentos.values(), key=lambda d: (d.centroid[0] - poly.centroid.x) ** 2 + (d.centroid[1] - poly.centroid.y) ** 2).id]
 
     # ------------------------------------------------------------------ main render
@@ -296,6 +307,7 @@ def register_sala(app, repo: Repository) -> None:
             scope_deps = shape_deps(st["shape"])
             units, unit_kind = deps_m.loc[scope_deps], "dep"
             name = f"Área desenhada · {len(scope_deps)} departamento{'s' if len(scope_deps) != 1 else ''}"
+            name = [name, html.Small(" (números somam os departamentos que a área toca)", className="note")]
             scope_row = _frame(d["A"].loc[scope_deps].sum().to_frame().T, d["E"].loc[scope_deps].sum().to_frame().T,
                                d["F"].loc[scope_deps].max().to_frame().T, win).iloc[0]
         else:
@@ -307,14 +319,14 @@ def register_sala(app, repo: Repository) -> None:
         al = deps_m[deps_m["status"].isin(["crit", "alert", "watch"])].sort_values("score", ascending=False)
         cnt = al["status"].value_counts()
         acount = [html.Span([str(cnt.get(k, 0)), html.Small(lbl)], style={"color": STATUS_C[k]}) for k, lbl in (("crit", "crít."), ("alert", "alerta"), ("watch", "atenção"))]
-        alerts = [go_btn("dep", i, [html.Span(LABEL[r.status], className=f"pill {r.status}"), html.Span(f"{r.nome} · {r['sub']}", className="pl"),
+        alerts = [go_btn("alert", "dep", i, [html.Span(LABEL[r.status], className=f"pill {r.status}"), html.Span(f"{r.nome} · {r['sub']}", className="pl"),
                                     html.Span([html.B(fx(r.ratio)), " o esperado · ", html.B(fmt(r.R)), f" focos em {wl} · ativo há ", html.B(str(r.pers)), " d"], className="hd")],
                          cls=f"acard {r.status}") for i, r in al.head(14).iterrows()] or [html.Span("Nenhum departamento fora do normal nesta janela.", className="note")]
 
-        crumbs = [go_btn("ar", "", "Argentina")]
+        crumbs = [go_btn("crumb", "ar", "", "Argentina")]
         if kind in ("prov", "dep"):
             pid = uid if kind == "prov" else geo.departamentos[uid].parent
-            crumbs += [" › ", go_btn("prov", pid, geo.provincias[pid].nome)]
+            crumbs += [" › ", go_btn("crumb", "prov", pid, geo.provincias[pid].nome)]
         if kind == "dep":
             crumbs += [" › ", html.Span(name, className="cur")]
         if kind == "shape":
@@ -328,11 +340,11 @@ def register_sala(app, repo: Repository) -> None:
               ("Esperado", fmtk(scope_row["Ex"]), f"média {d['baseline'][0]}–{d['baseline'][1]}"),
               ("Relação", fx(scope_row["ratio"]), LABEL[scope_row["status"]].lower()),
               (f"Em {D:%d/%m}", fmt(scope_row["today"]), f"{n_new} célula{'s' if n_new != 1 else ''} nova{'s' if n_new != 1 else ''} de 0,1°"),
-              ("Persistência", f"{int(scope_row['pers'])} d", "dias seguidos com focos"),
+              ("Persistência", f"{int(scope_row['pers'])}{'+' if scope_row['pers'] >= len(d['days']) - 1 else ''} d", "dias seguidos com focos"),
               ("FRP máximo", f"{fmt(scope_row['frp'])} MW" if scope_row["frp"] else "—", "maior intensidade na janela")]
         kpis = [html.Div([html.Span(a, className="k"), html.Span(b, className="v"), html.Span(c, className="d")], className="kpi") for a, b, c in kp]
 
-        mapfig, maplegend = sala_map(st, units, unit_kind, scope_deps, s, D, win, tool or "pan")
+        mapfig, maplegend = sala_map(st, units, unit_kind, scope_deps, s, D, win, tool or "pan", al)
         sort_k, sort_dir = st.get("sort", ["score", -1])
         tri_el = triage(tri, sort_k, sort_dir, kind, uid, d, win)
         strip, hleg = horizon(units.sort_values("score", ascending=False).head(12), unit_kind, d, win)
@@ -360,7 +372,11 @@ def register_sala(app, repo: Repository) -> None:
         return Filtro(kind="pais", uid="ARG", serie=serie)
 
     # ------------------------------------------------------------------ map
-    def sala_map(st, units, unit_kind, scope_deps, s: Sala, D, win, tool):
+    def dep_label(dep_id):
+        d = geo.departamentos.get(dep_id)
+        return f"{d.nome} · {geo.provincias[d.parent].nome}" if d and d.parent in geo.provincias else ""
+
+    def sala_map(st, units, unit_kind, scope_deps, s: Sala, D, win, tool, alert_deps):
         kind, uid = st["kind"], st["uid"]
         traces = []
         grey = [[0, "#eceae4"], [1, "#eceae4"]]
@@ -375,12 +391,23 @@ def register_sala(app, repo: Repository) -> None:
             fc = geo.subset("dep", units.index)
         else:
             fc = geo.fc["prov"]
+        def hover(r):
+            return (f"<b>{r.nome}</b><br>{LABEL[r.status]} · {fx(r.ratio)} o esperado<br>{fmt(r.R)} focos (esperado {fmt1(r.Ex)})<br>"
+                    f"Último dia: {fmt(r.today)} · ativo há {r.pers} d<br><i>clique para focar</i>")
         z = [ratio_class(r.ratio, r.R, r.Ex) for r in units.itertuples()]
-        cd = [[unit_kind, i, f"<b>{r.nome}</b><br>{LABEL[r.status]} · {fx(r.ratio)} o esperado<br>{fmt(r.R)} focos (esperado {fmt1(r.Ex)})<br>"
-                                f"Último dia: {fmt(r.today)} · ativo há {r.pers} d<br><i>clique para focar</i>"] for i, r in units.iterrows()]
+        cd = [[unit_kind, i, hover(r)] for i, r in units.iterrows()]
         traces.append(go.Choroplethmap(geojson=fc, locations=list(units.index), z=z, zmin=0, zmax=6, featureidkey="id",
                                        colorscale=[[k / 6, c] for k, c in enumerate(CLS_C)], showscale=False, marker_opacity=0.9,
                                        marker_line_width=0.6, marker_line_color="#8f877b", customdata=cd, hovertemplate="%{customdata[2]}<extra></extra>"))
+        if kind == "ar":  # departments on alert drawn over the provinces, so the alert list can be found on the map
+            hot = alert_deps
+            if len(hot):
+                traces.append(go.Choroplethmap(geojson=geo.subset("dep", hot.index), locations=list(hot.index), featureidkey="id",
+                                               z=[ratio_class(r.ratio, r.R, r.Ex) for r in hot.itertuples()], zmin=0, zmax=6,
+                                               colorscale=[[k / 6, c] for k, c in enumerate(CLS_C)], showscale=False, marker_opacity=0.95,
+                                               marker_line_width=1.4, marker_line_color="#3b2a20",
+                                               customdata=[["dep", i, f"{hover(r)}<br>{r['sub']}"] for i, r in hot.iterrows()],
+                                               hovertemplate="%{customdata[2]}<extra></extra>"))
         only_today = kind == "ar" and win > 1  # whole country: show only the last day to keep it readable
         pts = s.window_points(None if kind == "ar" else scope_deps, 1 if only_today else win)
         if len(pts):
@@ -388,9 +415,12 @@ def register_sala(app, repo: Repository) -> None:
             for flag, color, size in ((False, F.ACCENT, 5), (True, "#111", 7)):
                 g = pts[today == flag]
                 if len(g):
+                    where = [dep_label(x) for x in g["dep_id"]]
                     traces.append(go.Scattermap(lat=g["lat"], lon=g["lon"], mode="markers", marker=dict(size=size, color=color, opacity=0.85),
-                                                customdata=np.stack([g["ts"].dt.strftime("%d/%m/%Y %H:%M"), g["satelite"], g["frp"].round(1)], 1),
-                                                hovertemplate="<b>Foco · %{customdata[1]}</b><br>%{customdata[0]} UTC<br>FRP %{customdata[2]} MW<br>%{lat:.4f}, %{lon:.4f}<extra></extra>"))
+                                                customdata=np.stack([["pt"] * len(g), g["dep_id"].fillna(""), g["ts"].dt.strftime("%d/%m/%Y %H:%M"),
+                                                                     g["satelite"], g["frp"].round(1), where], 1),
+                                                hovertemplate="<b>Foco · %{customdata[3]}</b><br>%{customdata[5]}<br>%{customdata[2]} UTC · FRP %{customdata[4]} MW"
+                                                              "<br><i>clique para focar</i><extra></extra>"))
         layers = []
         if kind in ("prov", "dep"):
             u = geo.unit(kind, uid)
@@ -410,9 +440,9 @@ def register_sala(app, repo: Repository) -> None:
             layers.append(dict(sourcetype="geojson", type="line", color="#111", line=dict(width=3),
                                source={"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[x0, y0], [x0 + g, y0], [x0 + g, y0 + g], [x0, y0 + g], [x0, y0]]}}))
             bbox = (x0 - 0.3, y0 - 0.3, x0 + g + 0.3, y0 + g + 0.3)
-        if tool != "pan":
-            gxs, gys = np.meshgrid(np.linspace(bbox[0] - 3, bbox[2] + 3, 20), np.linspace(bbox[1] - 3, bbox[3] + 3, 20))
-            traces.append(go.Scattermap(lon=gxs.ravel(), lat=gys.ravel(), mode="markers", marker=dict(size=1, opacity=0), hoverinfo="skip"))
+        # invisible grid so box/lasso always return a selection, even over empty land
+        gxs, gys = np.meshgrid(np.linspace(bbox[0] - 3, bbox[2] + 3, 20), np.linspace(bbox[1] - 3, bbox[3] + 3, 20))
+        traces.append(go.Scattermap(lon=gxs.ravel(), lat=gys.ravel(), mode="markers", marker=dict(size=1, opacity=0), hoverinfo="skip"))
         center, zoom = F.zoom_for(bbox, 600, 430)
         fig = go.Figure(traces)
         fig.update_layout(map=dict(style="carto-positron", center=center, zoom=zoom, layers=layers), margin=dict(l=0, r=0, t=0, b=0),
@@ -421,7 +451,8 @@ def register_sala(app, repo: Repository) -> None:
         legend = [html.Div("Focos na janela vs. esperado", className="note"),
                   html.Div([html.Span([html.I(style={"background": c}), lab]) for c, lab in zip(CLS_C, CLS_L)], className="mlr"),
                   html.Div(([html.Span([html.I(className="dot", style={"background": F.ACCENT}), f"focos da janela ({WIN_L[win]})"])] if not only_today else []) +
-                           [html.Span([html.I(className="dot", style={"background": "#111"}), f"focos em {D:%d/%m}"])], className="legend")]
+                           [html.Span([html.I(className="dot", style={"background": "#111"}), f"focos em {D:%d/%m}"])] +
+                           ([html.Span("províncias coloridas; por cima, os departamentos em alerta")] if kind == "ar" else []), className="legend")]
         return fig, legend
 
     # ------------------------------------------------------------------ priority queue (sortable)
@@ -445,9 +476,9 @@ def register_sala(app, repo: Repository) -> None:
             a30 = A.loc[i].to_numpy()[-30:]
             mx = max(a30.max(), E.loc[i].to_numpy()[-30:].max(), 1)
             bars = [html.I(style={"height": f"{max(1, v / mx * 22):.0f}px", "background": "var(--accent)" if k >= 30 - win else "#c9cfd6"}) for k, v in enumerate(a30)]
-            body.append(html.Tr(className="row" + (" sel" if kind == "dep" and uid == i else ""), children=[
+            body.append(html.Tr(className="trow" + (" sel" if kind == "dep" and uid == i else ""), children=[
                 html.Td(html.Span(LABEL[r.status], className=f"pill {r.status}")),
-                html.Td(go_btn("dep", i, [r.nome, html.Small(r['sub'])], cls="plbtn")),
+                html.Td(go_btn("tri", "dep", i, [r.nome, html.Small(r['sub'])], cls="plbtn")),
                 html.Td(fmt(r.R), className="num"), html.Td(fmt1(r.Ex), className="num"), html.Td(html.B(fx(r.ratio)), className="num"),
                 html.Td(f"{arrow} {'+' if t >= 0 else ''}{fmt(min(t, 9.99) * 100)}%", className=f"trend {cls}"),
                 html.Td(str(r.pers), className="num"), html.Td(fmt(r.frp) if r.frp else "—", className="num"),
@@ -528,7 +559,7 @@ def register_sala(app, repo: Repository) -> None:
         items = []
         for r in cells.head(8).itertuples():
             dep = geo.departamentos.get(r.dep_id)
-            items.append(html.Li(go_btn("dep", r.dep_id, [
+            items.append(html.Li(go_btn("hoje", "dep", r.dep_id, [
                 html.Span([str(r.n), html.Small("focos")], className="n"),
                 html.Span([html.B(dep.nome if dep else "—"), html.Span(f"{geo.provincias[dep.parent].nome if dep else ''} · {abs(r.lat):.2f}°S {abs(r.lon):.2f}°W")], className="w"),
                 html.Span([html.Span("NOVO", className="new") if r.novo else None, html.Span(f"{pd.Timestamp(r.ultimo):%H:%M} UTC"),
