@@ -306,65 +306,121 @@ def register(app, repo: Repository) -> None:
                 for i, r in enumerate(df.itertuples())]
         return title, rows
 
-    # ------------------------------------------------------------ map
-    @app.callback(Output("map", "figure"), Output("maplegend", "children"), Input("st", "data"))
-    def render_map(st):
+    # ------------------------------------------------------------ map: the level of detail follows the zoom
+    # zoom < 3.6 countries · < 5.6 provinces · < 7 departments · < 9 grid of cells · >= 9 individual hotspots
+    LEVELS = [(3.6, "pais"), (5.6, "prov"), (7.0, "dep"), (9.0, "grid"), (99, "pts")]
+    LEVEL_LBL = {"pais": "países", "prov": "províncias", "dep": "departamentos", "grid": "grade de focos", "pts": "focos individuais"}
+    MAP_PX = {"dash": (580, 560), "map": (900, 640)}
+
+    def scope_key(st) -> str:
+        return f"{st['kind']}:{st['uid']}:{len(st['shape'])}:{st['shape'][:1]}"
+
+    def bbox_from(center, zoom, w, h):
+        import math
+        scale = 512 * 2 ** zoom
+        dlon = 360 * w / scale
+        y = math.log(math.tan(math.pi / 4 + math.radians(center["lat"]) / 2))
+        dy = math.pi * 2 * h / scale / 2
+        lat = lambda v: math.degrees(2 * math.atan(math.exp(v)) - math.pi / 2)  # noqa: E731
+        return [center["lon"] - dlon / 2, lat(y - dy), center["lon"] + dlon / 2, lat(y + dy)]
+
+    def in_argentina(bbox) -> bool:
+        a = geo.paises["ARG"].bbox
+        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+        return a[0] <= cx <= a[2] and a[1] <= cy <= a[3]
+
+    def level_for(zoom, layer, bbox):
+        lvl = next(name for lim, name in LEVELS if zoom < lim)
+        if not in_argentina(bbox) and lvl in ("prov", "dep"):
+            lvl = "pais" if zoom < 5.6 else "grid"  # provinces/departments only exist for Argentina
+        if layer == "dens":
+            return {"grid": "dep", "pts": "dep"}.get(lvl, lvl) if in_argentina(bbox) else "pais"
+        if layer == "grid":
+            return "grid"
+        if layer == "pts":
+            return "pts"
+        return lvl
+
+    def deg_for(zoom):
+        return 0.5 if zoom < 5 else 0.25 if zoom < 7 else 0.1 if zoom < 8 else 0.05
+
+    @app.callback(Output("mapview", "data"), Input("map", "relayoutData"), State("st", "data"), State("mapview", "data"), prevent_initial_call=True)
+    def on_view(rd, st, prev):
+        if not rd or not any(k.startswith("map.") for k in rd):
+            return no_update
+        prev = prev if prev and prev.get("scope") == scope_key(st) else {}
+        zoom = rd.get("map.zoom", prev.get("zoom"))
+        center = rd.get("map.center", prev.get("center"))
+        if zoom is None or center is None:
+            return no_update
+        der = rd.get("map._derived") or {}
+        coords = der.get("coordinates")
+        if coords:
+            xs, ys = [c[0] for c in coords], [c[1] for c in coords]
+            bbox = [min(xs), min(ys), max(xs), max(ys)]
+        else:
+            bbox = bbox_from(center, zoom, *MAP_PX[st["mode"]])
+        bbox = [round(v, 1) for v in bbox]
+        if prev and prev.get("bbox") == bbox and abs(prev.get("zoom", 0) - zoom) < 0.25:
+            return no_update
+        return {"scope": scope_key(st), "zoom": round(zoom, 2), "center": center, "bbox": bbox}
+
+    @app.callback(Output("map", "figure"), Output("maplegend", "children"), Output("map-level", "children"),
+                  Input("st", "data"), Input("mapview", "data"))
+    def render_map(st, view):
         f = filtro(st)
         k, uid, layer = st["kind"], st["uid"], st["layer"]
+        w, h = MAP_PX[st["mode"]]
+        if view and view.get("scope") == scope_key(st):
+            zoom, bbox = view["zoom"], view["bbox"]
+            center, start_zoom = view["center"], view["zoom"]
+        else:  # new selection: fly to it
+            center, zoom = F.zoom_for(scope_bbox(st), w, h)
+            start_zoom = zoom
+            bbox = bbox_from(center, zoom, w, h)
+        lvl = level_for(zoom, layer, bbox)
         traces, legend = [], []
-        center, zoom = F.zoom_for(scope_bbox(st), 760 if st["mode"] == "map" else 580, 640 if st["mode"] == "map" else 560)
         grey = [[0, "#eceae4"], [1, "#eceae4"]]
 
-        def units_trace(level, ids_units, df, highlight=True, opacity=0.85):
+        def visible(b):
+            return not (b[2] < bbox[0] or b[0] > bbox[2] or b[3] < bbox[1] or b[1] > bbox[3])
+
+        def units_trace(level, units, df, name, highlight, opacity, line_w=0.6):
             dfi = df.set_index("id") if len(df) else pd.DataFrame(columns=["n", "pico_mes", "frp_max"])
             ids, z, cd = [], [], []
-            for u in ids_units:
+            for u in units:
                 n = float(dfi["n"].get(u.id, 0)) if len(dfi) else 0.0
                 d = n / max(u.area_km2, 1) * 1000
                 pm = dfi["pico_mes"].get(u.id) if len(dfi) else None
-                nxt = {"pais": "ver províncias" if u.id == "ARG" else "ver a grade de focos", "prov": "ver departamentos", "dep": "ver grade e focos"}[level]
-                html_ = (f"<b>{u.nome}</b><br>{fmt(n)} focos · {fmt1(d)} por 1.000 km²" + (f"<br>Pico: {MESES_L[int(pm) - 1]}" if pm is not None and pd.notna(pm) else "")
-                         + f"<br><i>clique para {nxt}</i>")
-                ids.append(u.id); z.append(d if highlight else 0); cd.append([level, u.id, html_])
-            return ids, z, cd
+                txt = (f"<b>{u.nome}</b><br>{fmt(n)} focos · {fmt1(d)} por 1.000 km²" + (f"<br>Pico: {MESES_L[int(pm) - 1]}" if pm is not None and pd.notna(pm) else "")
+                       + "<br><i>clique para selecionar · aproxime para ver mais detalhes</i>")
+                ids.append(u.id); z.append(d if highlight else 0); cd.append([level, u.id, txt])
+            vals = [v for v in z if v > 0]
+            zmax = float(np.quantile(vals, 0.95)) if vals else 1
+            fc = geo.fc[level] if level in ("pais", "prov") else geo.subset("dep", ids)
+            traces.append(F.choropleth(fc, ids, z, cd, name, opacity=opacity, line_w=line_w, colorscale=None if highlight else grey, zmax=zmax))
+            return zmax
 
-        sel_geo = None
-        # countries: context (muted) or main layer
-        cdf = repo.territories("pais", f) if k != "shape" else pd.DataFrame(columns=["id", "n", "pico_mes", "frp_max"])
-        main_level = "pais" if k == "all" else None
-        ids, z, cd = units_trace("pais", geo.paises.values(), cdf, highlight=(k in ("all",)) or (k == "pais" and uid != "ARG"))
-        zmax_c = np.quantile([v for v in z if v > 0], 0.95) if any(v > 0 for v in z) else 1
-        traces.append(F.choropleth(geo.fc["pais"], ids, z, cd, "países", opacity=0.75 if main_level else 0.55, colorscale=None if (k == "all" or (k == "pais" and uid != "ARG")) else grey, zmax=zmax_c))
-        if k == "all" or (k == "pais" and uid != "ARG"):
-            legend = ramp_legend(zmax_c, "Focos por 1.000 km²")
-        # Argentine provinces
-        if k in ("pais", "prov", "dep") and (uid == "ARG" or k in ("prov", "dep")) or (k == "shape"):
-            pdf = repo.territories("prov", f) if k != "shape" else pd.DataFrame(columns=["id", "n", "pico_mes", "frp_max"])
-            hl = k == "pais" and layer in ("auto", "dens")
-            ids, z, cd = units_trace("prov", geo.provincias.values(), pdf, highlight=hl)
-            zmax_p = np.quantile([v for v in z if v > 0], 0.95) if any(v > 0 for v in z) else 1
-            traces.append(F.choropleth(geo.fc["prov"], ids, z, cd, "províncias", opacity=0.85 if hl else 0.5, colorscale=None if hl else grey, zmax=zmax_p))
-            if hl:
-                legend = ramp_legend(zmax_p, "Focos por 1.000 km²")
-        # departments of the selected province
-        if k in ("prov", "dep"):
-            pid = uid if k == "prov" else geo.departamentos[uid].parent
-            ddf = repo.territories("dep", f, pid)
-            deps = [geo.departamentos[d] for d in geo.deps_of.get(pid, [])]
-            hl = layer in ("auto", "dens") and (k == "prov" or layer == "dens")
-            ids, z, cd = units_trace("dep", deps, ddf, highlight=hl)
-            zmax_d = np.quantile([v for v in z if v > 0], 0.95) if any(v > 0 for v in z) else 1
-            traces.append(F.choropleth(geo.subset("dep", ids), ids, z, cd, "departamentos", opacity=0.85 if hl else 0.45, line_w=0.5, colorscale=None if hl else grey, zmax=zmax_d))
-            if hl:
-                legend = ramp_legend(zmax_d, "Focos por 1.000 km²")
-        # grid + points
-        want_grid = layer == "grid" or (layer == "auto" and (k in ("dep", "shape") or (k == "pais" and uid != "ARG")))
-        if want_grid and layer != "dens":
-            deg = grid_deg(st)
-            g = repo.grid(f, deg)
-            while len(g) > 2500 and deg < 2:  # keep the map light: coarser cells when there are too many
+        empty = pd.DataFrame(columns=["id", "n", "pico_mes", "frp_max"])
+        tf = Filtro(kind="all", uid="all", t0=f.t0, t1=f.t1, cal=f.cal, sats=f.sats, serie=f.serie)  # map shows everything; the selection is outlined
+        zmax = units_trace("pais", geo.paises.values(), repo.territories("pais", tf), "países", lvl == "pais", 0.75 if lvl == "pais" else 0.45)
+        if lvl == "pais":
+            legend = ramp_legend(zmax, "Focos por 1.000 km²")
+        if lvl in ("prov", "dep", "grid", "pts") and visible(geo.paises["ARG"].bbox):
+            zp = units_trace("prov", geo.provincias.values(), repo.territories("prov", tf) if lvl == "prov" else empty, "províncias", lvl == "prov",
+                             0.85 if lvl == "prov" else 0.35, line_w=1.0)
+            if lvl == "prov":
+                legend = ramp_legend(zp, "Focos por 1.000 km²")
+        if lvl == "dep":
+            deps = [d for d in geo.departamentos.values() if visible(d.bbox)]
+            zd = units_trace("dep", deps, repo.territories("dep", tf), "departamentos", True, 0.85, line_w=0.5)
+            legend = ramp_legend(zd, "Focos por 1.000 km² (departamentos)")
+        if lvl in ("grid", "pts"):
+            g = repo.grid_view(tf, deg_for(zoom), tuple(bbox))
+            deg = g.attrs.get("deg", deg_for(zoom))
+            while len(g) > 3000 and deg < 2:
                 deg *= 2
-                g = repo.grid(f, deg)
+                g = repo.grid_view(tf, deg, tuple(bbox))
             if len(g):
                 gj = F.grid_geojson(g, deg)
                 zmax_g = float(g["n"].quantile(0.97)) or 1
@@ -372,32 +428,29 @@ def register(app, repo: Repository) -> None:
                 for r in g.itertuples():
                     lat = (r.gy + 0.5) * deg
                     km2 = deg * 111.32 * np.cos(np.radians(lat)) * deg * 110.57
-                    sats = " · ".join(f"{s} {int(getattr(r, s))}" for s in repo.sats if hasattr(r, s) and getattr(r, s))
+                    sats = " · ".join(f"{s_} {int(getattr(r, s_))}" for s_ in repo.sats if hasattr(r, s_) and getattr(r, s_))
                     pm = MESES_L[int(r.pico_mes) - 1] if pd.notna(r.pico_mes) else "—"
                     cd.append(["cell", int(r.gx), int(r.gy), deg,
                                f"<b>Célula de {str(deg).replace('.', ',')}° (~{fmt(km2)} km²)</b><br>{fmt(r.n)} focos · pico em {pm}<br>"
                                f"Último: {mlabel(int(r.ultimo_mi))} · FRP máx. {fmt1(r.frp_max)} MW<br>{sats}<br><i>clique para analisar a célula</i>"])
-                tr = F.choropleth(gj, [ft["id"] for ft in gj["features"]], g["n"].tolist(), cd, "grade", opacity=0.8, line_w=0, zmax=zmax_g)
+                tr = F.choropleth(gj, [ft["id"] for ft in gj["features"]], g["n"].tolist(), cd, "grade", opacity=0.55 if lvl == "pts" else 0.8, line_w=0, zmax=zmax_g)
                 tr.hovertemplate = "%{customdata[4]}<extra></extra>"
                 traces.append(tr)
                 legend = ramp_legend(zmax_g, f"Focos por célula de {str(deg).replace('.', ',')}°", per_area=False)
-        want_pts = layer == "pts" or (layer == "auto" and k in ("dep", "shape"))
-        if want_pts and layer != "dens" and repo.count_points(f) <= 20000:
-            p = repo.points(f, 5000)
+        if lvl == "pts":
+            p, total = repo.points_view(tf, tuple(bbox))
             for sat, grp in p.groupby("satelite"):
                 traces.append(go.Scattermap(lat=grp["lat"], lon=grp["lon"], mode="markers", name=sat,
                                             marker=dict(size=7, color=F.SAT_C.get(sat, "#888"), opacity=0.9),
                                             customdata=np.stack([np.full(len(grp), "pt"), grp["ts"].dt.strftime("%d/%m/%Y %H:%M"), grp["frp"].round(1),
                                                                  np.full(len(grp), sat), grp["sensor"]], 1),
                                             hovertemplate="<b>Foco · %{customdata[3]} (%{customdata[4]})</b><br>%{customdata[1]} UTC<br>FRP %{customdata[2]} MW<br>%{lat:.4f}, %{lon:.4f}<extra></extra>"))
-            legend = legend + [html.Div([html.Span([html.I(className="dot", style={"background": c}), s]) for s, c in F.SAT_C.items() if s in repo.sats], className="legend")]
-        # invisible lattice so box/lasso selection always fires (only while a drawing tool is active)
-        if st.get("tool", "pan") != "pan":
-            x0, y0, x1, y1 = scope_bbox(st)
-            mx_, my_ = (x1 - x0) * 0.6 + 0.5, (y1 - y0) * 0.6 + 0.5
-            gx, gy = np.meshgrid(np.linspace(x0 - mx_, x1 + mx_, 20), np.linspace(y0 - my_, y1 + my_, 20))
+            legend = legend + [html.Div([html.Span([html.I(className="dot", style={"background": c}), s_]) for s_, c in F.SAT_C.items() if s_ in repo.sats], className="legend")]
+            if total > len(p):
+                legend.append(html.Div(f"Mostrando os {fmt(len(p))} focos mais recentes de {fmt(total)} na tela. Aproxime ou filtre o período para ver todos.", className="note"))
+        if st.get("tool", "pan") != "pan":  # invisible lattice so box/lasso selection always fires
+            gx, gy = np.meshgrid(np.linspace(bbox[0], bbox[2], 20), np.linspace(bbox[1], bbox[3], 20))
             traces.append(go.Scattermap(lon=gx.ravel(), lat=gy.ravel(), mode="markers", marker=dict(size=1, opacity=0), hoverinfo="skip", name="sel"))
-        # outlines
         layers = []
         if k in ("pais", "prov", "dep"):
             u = geo.unit(k, uid)
@@ -407,11 +460,11 @@ def register(app, repo: Repository) -> None:
             layers.append(dict(sourcetype="geojson", source={"type": "Feature", "geometry": {"type": "LineString", "coordinates": ring}},
                                type="line", color=F.ACCENT, line=dict(width=2.5, dash=[2, 1])))
         fig = go.Figure(traces)
-        fig.update_layout(map=dict(style="carto-positron", center=center, zoom=zoom, layers=layers),
+        fig.update_layout(map=dict(style="carto-positron", center=center, zoom=start_zoom, layers=layers),
                           margin=dict(l=0, r=0, t=0, b=0), showlegend=False, dragmode=st.get("tool", "pan"),
-                          uirevision=f"{k}:{uid}:{len(st['shape'])}:{st['shape'][:1]}", paper_bgcolor="#d9e2ea",
+                          uirevision=scope_key(st), paper_bgcolor="#d9e2ea",
                           hoverlabel=dict(bgcolor=F.FG, font_color="#fff", font_size=12), clickmode="event")
-        return fig, legend
+        return fig, legend, f"Detalhe: {LEVEL_LBL[lvl]}" + (" · automático pelo zoom" if layer == "auto" else "")
 
     def ramp_legend(zmax, title, per_area=True):
         labels = [fmt1(zmax * (i + 1) / 6) if zmax * (i + 1) / 6 < 10 else fmt(zmax * (i + 1) / 6) for i in range(5)] + ["+"]

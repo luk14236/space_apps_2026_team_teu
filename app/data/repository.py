@@ -58,7 +58,8 @@ class Repository:
     def reload(self) -> None:
         """Re-read data/processed after /admin rebuilt it (no restart needed)."""
         with self._lock:
-            for fn in (Repository.monthly, Repository.territories, Repository.grid, Repository.points, Repository.count_points):
+            for fn in (Repository.monthly, Repository.territories, Repository.grid, Repository.points, Repository.count_points,
+                       Repository._grid_view, Repository.points_view):
                 fn.cache_clear()
             if self._con is not None:
                 self._con.close()
@@ -275,6 +276,53 @@ class Repository:
                           FROM b GROUP BY b.gx, b.gy HAVING n > 0""", prm + tp + sp)
 
     @lru_cache(maxsize=64)
+    # ---------------------------------------------------------------- viewport queries (map follows the zoom)
+    def grid_view(self, f: Filtro, deg: float, bbox: tuple) -> pd.DataFrame:
+        """Cells of `deg` degrees inside the visible bbox (x0, y0, x1, y1); time/satellite/series filters from `f`."""
+        return self._grid_view(f, round(deg, 4), tuple(round(v, 2) for v in bbox))
+
+    @lru_cache(maxsize=64)
+    def _grid_view(self, f: Filtro, deg: float, bbox: tuple) -> pd.DataFrame:
+        x0, y0, x1, y1 = bbox
+        ts, tp = self._time_sql(f)
+        sat, sp = self._sat_sql(f)
+        val = self.value_expr(f.serie, agg=True)
+        ar = self.geo.paises["ARG"].bbox
+        inside_ar = x0 >= ar[0] - 1 and x1 <= ar[2] + 1 and y0 >= ar[1] - 1 and y1 <= ar[3] + 1
+        base = 0.25 if deg >= 0.25 - 1e-9 else 0.05
+        tab = "cell_025" if base == 0.25 or not inside_ar else "cell_ar"
+        if tab == "cell_025":
+            base = 0.25
+            deg = max(deg, 0.25)
+        k = deg / base
+        gx0, gx1 = int(np.floor(x0 / base)), int(np.floor(x1 / base))
+        gy0, gy1 = int(np.floor(y0 / base)), int(np.floor(y1 / base))
+        sats_cols = ", ".join(f"SUM(n) FILTER (WHERE satelite = '{s}') AS \"{s}\"" for s in self.sats)
+        df = self.q(f"""WITH b AS (SELECT CAST(floor(gx / {k} + 1e-9) AS INTEGER) gx, CAST(floor(gy / {k} + 1e-9) AS INTEGER) gy,
+                                   mi, mes, satelite, sensor, n, n_harm, frp_max FROM {tab}
+                                   WHERE gx BETWEEN ? AND ? AND gy BETWEEN ? AND ? AND {ts} AND {sat}),
+                           m AS (SELECT gx, gy, mes, {val} v FROM b GROUP BY ALL),
+                           p AS (SELECT gx, gy, arg_max(mes, v) pico_mes FROM m GROUP BY ALL)
+                        SELECT b.gx, b.gy, {val} AS n, MAX(frp_max) frp_max, MAX(mi) ultimo_mi, {sats_cols}, ANY_VALUE(p.pico_mes) pico_mes
+                        FROM b JOIN p USING (gx, gy) GROUP BY b.gx, b.gy HAVING n > 0""", [gx0, gx1, gy0, gy1] + tp + sp)
+        df.attrs["deg"] = deg
+        return df.fillna({s: 0 for s in self.sats})
+
+    @lru_cache(maxsize=64)
+    def points_view(self, f: Filtro, bbox: tuple, limit: int = 6000) -> tuple[pd.DataFrame, int]:
+        """Most recent hotspots inside the bbox, and how many there are in total."""
+        x0, y0, x1, y1 = bbox
+        ts, tp = self._time_sql(f)
+        sat, sp = self._sat_sql(f)
+        ar = self.geo.paises["ARG"].bbox
+        view = "focos_arg" if (x0 >= ar[0] - 1 and x1 <= ar[2] + 1 and y0 >= ar[1] - 1 and y1 <= ar[3] + 1) else "focos"
+        cond = " AND sensor='MODIS'" if f.serie == "modis" else ""
+        where = f"lon BETWEEN ? AND ? AND lat BETWEEN ? AND ? AND {ts} AND {sat}{cond}"
+        prm = [x0, x1, y0, y1] + tp + sp
+        total = int(self.q(f"SELECT COUNT(*) c FROM {view} WHERE {where}", prm)["c"].iloc[0])
+        df = self.q(f"SELECT lat, lon, ts, satelite, sensor, frp FROM {view} WHERE {where} ORDER BY ts DESC LIMIT {int(limit)}", prm)
+        return df, total
+
     def points(self, f: Filtro, limit: int = 5000) -> pd.DataFrame:
         view, where, prm = self._points_scope(f)
         ts, tp = self._time_sql(f)

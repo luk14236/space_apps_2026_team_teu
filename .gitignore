@@ -22,3 +22,8 @@ data/processed.tar
 data/processed_prev/
 data/processed_swap/
 data/publicacoes.json
+data/entrada/
+data/entregas/
+data/versoes.json
+data/firms_tmp/
+dataset*.tar.gz

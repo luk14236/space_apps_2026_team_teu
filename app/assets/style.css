@@ -168,3 +168,22 @@ a.btn{text-decoration:none;color:inherit;width:max-content}
 .sats{display:flex;gap:3px}.sats i{width:8px;height:8px;border-radius:50%;display:block}
 @media (max-width:1200px){.scard,.scard.s-S,.scard.s-L{grid-column:span 6}.skpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:800px){.scard,.scard.s-S,.scard.s-L{grid-column:span 12}.scope,.alerts{grid-template-columns:1fr}.acount{border-right:0}.skpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.mapfoot{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:0 10px}.mapfoot .lvl{font-family:var(--f-mono);font-size:11px;color:var(--accent);background:var(--accent-soft);padding:2px 8px;border-radius:999px}
+
+/* sala: edição do painel, ordenação, NRT */
+.sala .ctools{display:none;gap:4px;align-items:flex-start}
+.sala-body.editing .ctools{display:flex}
+.sala-body.editing .scard{outline:2px dashed #c9cfd6;outline-offset:2px}
+.ctools button{border:1px solid var(--line);background:var(--surface-2);border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer}
+.scard .chd{flex-direction:row;justify-content:space-between;align-items:flex-start}
+.edits{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted)}
+.edits:not(:empty){background:var(--surface);border:1px dashed #c9cfd6;border-radius:8px;padding:8px 10px}
+.thbtn{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;white-space:nowrap}
+.thbtn:hover{color:var(--fg);text-decoration:underline}
+.live{display:inline-flex;align-items:center;gap:6px;font-family:var(--f-mono);font-size:11px;letter-spacing:.06em;color:var(--muted)}
+.livedot{width:8px;height:8px;border-radius:50%;background:#2f7a57;box-shadow:0 0 0 3px rgba(47,122,87,.18)}
+.preset{width:190px;font-size:12.5px}.search.sm{width:240px}
+.scard.s-XL{grid-column:span 12}
+.sala .foot{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px;padding:6px 2px}
+.sala .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}

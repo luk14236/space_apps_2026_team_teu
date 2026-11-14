@@ -76,6 +76,16 @@ class Sala:
         out["novo"] = [(gx, gy) not in before for gx, gy in zip(out["gx"], out["gy"])]
         return out.sort_values(["n", "frp"], ascending=False)
 
+    def window_points(self, deps: list[str] | None, win: int, limit: int = 8000) -> pd.DataFrame:
+        """Hotspots of the last `win` days (most recent first), optionally restricted to some departments."""
+        D = self.daily()["D"]
+        where, prm = ("dep_id IN (" + ",".join("?" * len(deps)) + ")", list(deps)) if deps else ("TRUE", [])
+        df = self.repo.q(f"""SELECT lat, lon, ts, CAST(ts AS DATE) dia, satelite, frp FROM focos_arg
+                             WHERE {where} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT {int(limit)}""",
+                         prm + [pd.Timestamp(D - timedelta(days=win - 1)), pd.Timestamp(D + timedelta(days=1))])
+        df["dia"] = pd.to_datetime(df["dia"]).dt.date
+        return df
+
     def sat_status(self) -> pd.DataFrame:
         D = self.daily()["D"]
         return self.repo.q("""SELECT satelite, MAX(ts) ultimo, COUNT(*) FILTER (WHERE CAST(ts AS DATE) = ?) hoje

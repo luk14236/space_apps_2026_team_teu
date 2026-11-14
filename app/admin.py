@@ -1,11 +1,13 @@
-"""/admin: guided data update — bring new data, check it, process, apply to the dashboard, publish online.
+"""/admin: receive data deliveries (kept as versions), process them, apply to the dashboard and publish online.
 
 AI-assisted: written with Claude (Anthropic) and reviewed by the team.
 
 Access: user + password login (ADMIN_USER / ADMIN_PASSWORD from the environment or .env); disabled without them.
-The page is not linked from the public UI. The page itself (HTML/JS) lives in admin_page.py; this module is the
-JSON API it calls. Processing builds a *candidate* in data/processed_next; "Aplicar" swaps it in (the old version is
-kept in data/processed_prev for "Voltar à versão anterior").
+The page is not linked from the public UI. HTML/JS lives in admin_page.py; this module is the JSON API.
+
+Flow: deliveries (app/pipeline/entregas.py) -> process the active ones into data/processed_next (candidate) ->
+"Aplicar" swaps it into data/processed (previous kept in data/processed_prev) -> "Publicar" sends it online.
+Every applied version is logged in data/versoes.json.
 """
 from __future__ import annotations
 
@@ -15,24 +17,17 @@ import math
 import re
 import secrets
 import shutil
-import tarfile
 import threading
 import time
-import zipfile
 from collections import deque
 from datetime import date, timedelta
 from pathlib import Path
 
-import duckdb
 from flask import Blueprint, Response, abort, jsonify, redirect, request, session
 
 from . import config
 from .admin_page import page_html, shell
-from .pipeline import firms, prepare, publish
-
-ALLOWED_CSV = re.compile(r"^focos_(brutos|mensais)[\w.\-]*\.csv$", re.I)
-ARCHIVE = re.compile(r"\.(tar\.gz|tgz|tar|zip)$", re.I)
-OFF = ".off"  # a file renamed to *.csv.off is kept but not used
+from .pipeline import entregas, firms, prepare, publish
 
 
 class Jobs:
@@ -77,9 +72,7 @@ def read_meta(d: Path) -> dict | None:
 def diff(old: dict | None, new: dict) -> dict:
     o_av, n_av = set((old or {}).get("avisos", [])), set(new.get("avisos", []))
     return {"delta_focos": new["total_focos"] - (old or {}).get("total_focos", 0),
-            "novos_avisos": sorted(n_av - o_av), "avisos_resolvidos": sorted(o_av - n_av),
-            "novas_colunas": sorted(set(new.get("colunas_extras", [])) - set((old or {}).get("colunas_extras", []))),
-            "novos_satelites": sorted(set(new.get("satelites", [])) - set((old or {}).get("satelites", [])))}
+            "novos_avisos": sorted(n_av - o_av), "avisos_resolvidos": sorted(o_av - n_av)}
 
 
 PREP_STAGES = [("lendo", 5, "Lendo os arquivos"), ("focos_outros", 40, "Outros países gravados"), ("Argentina:", 45, "Atribuindo províncias e departamentos"),
@@ -91,9 +84,8 @@ FIRMS_LINE = re.compile(r"^\S+\s+\d{4}-\d{2}-\d{2} \+\d+d")
 def create_blueprint(get_repo) -> Blueprint:
     bp = Blueprint("admin", __name__)
     jobs = Jobs()
-    raw: Path = config.RAW_DIR
     nxt, prev = config.DATA_DIR / "processed_next", config.DATA_DIR / "processed_prev"
-    stats_path = raw / ".stats.json"
+    versions_path = config.DATA_DIR / "versoes.json"
 
     # ---------------------------------------------------------------- access
     def configured() -> bool:
@@ -113,67 +105,58 @@ def create_blueprint(get_repo) -> Blueprint:
         if not tok or tok != session.get("csrf"):
             abort(400, "Sessão expirada. Recarregue a página.")
 
-    # ---------------------------------------------------------------- raw files + quick stats
-    def load_stats() -> dict:
+    # ---------------------------------------------------------------- versions log
+    def versions() -> list[dict]:
         try:
-            return json.loads(stats_path.read_text(encoding="utf-8"))
+            return json.loads(versions_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}
+            return []
 
-    def files() -> list[dict]:
-        st = load_stats()
-        out = []
-        for p in sorted(raw.glob("focos_*.csv*")) if raw.exists() else []:
-            if not (p.name.endswith(".csv") or p.name.endswith(".csv" + OFF)):
-                continue
-            base = p.name[:-len(OFF)] if p.name.endswith(OFF) else p.name
-            s = p.stat()
-            cached = st.get(base)
-            fresh = cached if cached and cached.get("size") == s.st_size and cached.get("mtime") == int(s.st_mtime) else None
-            out.append({"name": base, "active": not p.name.endswith(OFF), "size": s.st_size, "mtime": int(s.st_mtime),
-                        "tipo": "brutos" if "brutos" in base else "mensais", "stats": fresh})
-        return out
-
-    def inspect(job: Jobs) -> None:
-        st = load_stats()
-        todo = [f for f in files() if not f["stats"]]
-        con = duckdb.connect()
-        for k, f in enumerate(todo):
-            job.progress(5 + 90 * k / max(len(todo), 1), f"Conferindo {f['name']}")
-            path = raw / (f["name"] if f["active"] else f["name"] + OFF)
-            job.add(f"Conferindo {f['name']} ({f['size'] / 1e6:.0f} MB)…")
-            src = f"read_csv('{path.as_posix()}', header=true)"
-            info = {"size": f["size"], "mtime": f["mtime"]}
-            try:
-                cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()]
-                if f["tipo"] == "brutos":
-                    miss = [c for c in prepare.REQUIRED if c not in cols]
-                    info["faltando"] = miss
-                    info["extras"] = [c for c in prepare.OPTIONAL if c in cols]
-                    if not miss:
-                        r = con.execute(f"""SELECT COUNT(*), MIN(data_hora_gmt), MAX(data_hora_gmt), list(DISTINCT upper(satelite) ORDER BY 1),
-                                               COUNT(DISTINCT pais) FROM {src}""").fetchone()
-                        info.update(linhas=r[0], inicio=str(r[1])[:10], fim=str(r[2])[:10], satelites=sorted(r[3]), paises=r[4])
-                else:
-                    r = con.execute(f"SELECT COUNT(*), MIN(ano*100+mes), MAX(ano*100+mes), SUM(nfocos) FROM {src}").fetchone()
-                    info.update(linhas=r[0], inicio=f"{r[1] // 100}-{r[1] % 100:02d}", fim=f"{r[2] // 100}-{r[2] % 100:02d}", total=int(r[3] or 0))
-            except Exception as e:  # noqa: BLE001
-                info["erro"] = str(e).splitlines()[0][:200]
-            st[f["name"]] = info
-            stats_path.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
-        job.add("Arquivos conferidos.")
+    def log_version(meta: dict, acao: str) -> None:
+        entry = {"quando": time.strftime("%Y-%m-%d %H:%M"), "acao": acao, "total_focos": meta["total_focos"],
+                 "inicio": meta["inicio"][:10], "fim": meta["fim"][:10], "processado_em": meta["gerado_em"],
+                 "entregas": [e["nome"] for e in meta.get("entregas", [])] or meta.get("fonte", [])}
+        versions_path.write_text(json.dumps([entry] + versions()[:49], ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ---------------------------------------------------------------- jobs
-    def process(job: Jobs) -> None:
+    def after_receive(job: Jobs, then_process: bool) -> None:
+        entregas.inspect_all(job.add, lambda p, s: job.progress(60 + p * 0.1 if then_process else 50 + p * 0.5, s))
+        if then_process:
+            job.add("Processando com a entrega nova…")
+            process(job, base=70, span=30)
+
+    def process(job: Jobs, base: float = 0, span: float = 100) -> None:
+        brutos, mensais, used = entregas.active_files()
+        if not brutos:
+            raise ValueError("Nenhuma entrega ativa com focos_brutos.")
         shutil.rmtree(nxt, ignore_errors=True)
 
         def log(m: str):
             job.add(m)
             for key, pct, stage in PREP_STAGES:
                 if key in m:
-                    job.progress(pct, stage)
-        meta = prepare.run(raw, nxt, config.GEO_DIR, log=log)
-        job.add(f"Nova versão pronta: {meta['total_focos']:,} focos, {meta['inicio'][:10]} a {meta['fim'][:10]}. Confira e clique em Aplicar.".replace(",", "."))
+                    job.progress(base + pct * span / 100, stage)
+        job.add("Entregas usadas: " + "; ".join(e["nome"] for e in used))
+        meta = prepare.run(None, nxt, config.GEO_DIR, log=log, files=(brutos, mensais), entregas=used)
+        job.add(f"Versão nova pronta: {meta['total_focos']:,} focos, {meta['inicio'][:10]} a {meta['fim'][:10]}. Confira e clique em Aplicar.".replace(",", "."))
+
+    def import_inbox(name: str, then_process: bool):
+        def run(job: Jobs) -> None:
+            path = entregas.inbox() / Path(name).name
+            if not path.exists():
+                raise ValueError(f"{name} não está mais na pasta de entrada.")
+            job.progress(5, f"Importando {name}")
+            entregas.from_path(path, "pasta", job.add)
+            path.unlink()
+            job.add(f"{name} removido da pasta de entrada (o conteúdo está guardado na entrega).")
+            after_receive(job, then_process)
+        return run
+
+    def import_url(url: str, then_process: bool):
+        def run(job: Jobs) -> None:
+            entregas.from_url(url, job.add, job.progress)
+            after_receive(job, then_process)
+        return run
 
     def pull_firms(start: date, end: date, then_process: bool):
         def run(job: Jobs) -> None:
@@ -184,23 +167,16 @@ def create_blueprint(get_repo) -> Blueprint:
                 job.add(m)
                 if FIRMS_LINE.match(m):
                     done[0] += 1
-                    job.progress(min(95, done[0] / total * (60 if then_process else 95)), f"Baixando do FIRMS ({done[0]}/{total})")
-            path = firms.run(start, end, raw, config.FIRMS_MAP_KEY, config.GEO_DIR, log=log)
-            if path and then_process:
-                job.add("Processando com os focos novos…")
-                base = job.progress
-
-                def scaled(p, s):
-                    base(60 + p * 0.4, s)
-                job.progress = scaled
-                try:
-                    process(job)
-                finally:
-                    job.progress = base
+                    job.progress(min(55, done[0] / total * 55), f"Baixando do FIRMS ({done[0]}/{total})")
+            tmp = config.DATA_DIR / "firms_tmp"
+            shutil.rmtree(tmp, ignore_errors=True)
+            path = firms.run(start, end, tmp, config.FIRMS_MAP_KEY, config.GEO_DIR, log=log)
+            if path:
+                entregas.from_path(path, "firms", job.add, nome=f"FIRMS {start:%d/%m/%Y} a {end:%d/%m/%Y}")
+            shutil.rmtree(tmp, ignore_errors=True)
+            if path:
+                after_receive(job, then_process)
         return run
-
-    def do_publish(job: Jobs) -> None:
-        publish.publish(job.add, job.progress)
 
     # ---------------------------------------------------------------- pages
     @bp.route("/admin", methods=["GET"])
@@ -235,13 +211,15 @@ def create_blueprint(get_repo) -> Blueprint:
     def state():
         if not allowed():
             abort(403)
+        entregas.migrate_raw(config.RAW_DIR, log=lambda m: None)  # old data/raw layout -> deliveries (one-off, on first admin use)
         live, cand, old = read_meta(config.PROCESSED_DIR), read_meta(nxt), read_meta(prev)
         last = date.fromisoformat(live["fim"][:10]) if live else date(date.today().year, 1, 1) - timedelta(days=1)
         ok_pub, why = publish.availability()
         return jsonify(
             mode="online" if config.ON_SPACE else "local",
             live=live, candidate=cand, candidate_diff=diff(live, cand) if cand else None, prev=old,
-            files=files(), job={**jobs.state, "log": list(jobs.log)[-200:]},
+            entregas=entregas.all_entregas(), inbox=entregas.inbox_files(), inbox_path=str(entregas.inbox()),
+            versions=versions()[:10], job={**jobs.state, "log": list(jobs.log)[-200:]},
             firms={"key": bool(config.FIRMS_MAP_KEY), "start": min(last + timedelta(days=1), date.today()).isoformat(), "end": date.today().isoformat()},
             publish={"available": ok_pub, "reason": why, "space": config.HF_SPACE, "site": config.SITE_URL, "history": publish.history()[:5]},
         )
@@ -251,89 +229,69 @@ def create_blueprint(get_repo) -> Blueprint:
 
     @bp.route("/admin/upload", methods=["POST"])
     def upload():
+        """Browser upload: archives become one delivery each; loose CSVs sent together become one delivery."""
         guard()
         if jobs.state["running"]:
             return busy()
-        raw.mkdir(parents=True, exist_ok=True)
-        saved, skipped = [], []
-        for f in request.files.getlist("arquivos"):
-            name = Path(f.filename or "").name
-            if ALLOWED_CSV.match(name):
-                tmp = raw / (name + ".part")
+        files = request.files.getlist("arquivos")
+        csvs = [(Path(f.filename).name, f.stream) for f in files if entregas.ALLOWED_CSV.match(Path(f.filename or "").name)]
+        archives = [f for f in files if entregas.ARCHIVE.search(Path(f.filename or "").name)]
+        skipped = [Path(f.filename or "").name for f in files if f not in archives and not entregas.ALLOWED_CSV.match(Path(f.filename or "").name)]
+        created, msgs = [], []
+        try:
+            if csvs:
+                created.append(entregas.from_files(csvs, "upload", request.form.get("nome") or csvs[0][0], msgs.append)["nome"])
+            for f in archives:
+                entregas.inbox().mkdir(parents=True, exist_ok=True)
+                tmp = entregas.inbox() / ("." + Path(f.filename).name + ".upload")
                 f.save(tmp)
-                tmp.replace(raw / name)
-                (raw / (name + OFF)).unlink(missing_ok=True)
-                saved.append(name)
-            elif ARCHIVE.search(name):
-                tmp = config.DATA_DIR / "upload.tmp"
-                f.save(tmp)
-                s, k = extract(tmp, name)
-                tmp.unlink(missing_ok=True)
-                saved += s
-                skipped += k
-            elif name:
-                skipped.append(name)
-        if request.headers.get("X-CSRF"):
-            return jsonify(ok=bool(saved), saved=saved, skipped=skipped)
-        return redirect("/admin")
-
-    def extract(path: Path, name: str):
-        saved, skipped = [], []
-
-        def write(src, base):
-            with open(raw / (base + ".part"), "wb") as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
-            (raw / (base + ".part")).replace(raw / base)
-            (raw / (base + OFF)).unlink(missing_ok=True)
-            saved.append(base)
-        if name.lower().endswith(".zip"):
-            with zipfile.ZipFile(path) as z:
-                for info in z.infolist():
-                    base = Path(info.filename).name
-                    if info.is_dir():
-                        continue
-                    if ALLOWED_CSV.match(base):
-                        with z.open(info) as src:
-                            write(src, base)
-                    else:
-                        skipped.append(base)
-        else:
-            with tarfile.open(path, "r:*") as t:
-                for m in t:
-                    base = Path(m.name).name
-                    if not m.isfile():
-                        continue
-                    if ALLOWED_CSV.match(base):
-                        write(t.extractfile(m), base)
-                    else:
-                        skipped.append(base)
-        return saved, skipped
+                final = tmp.with_name(Path(f.filename).name)
+                tmp.replace(final)
+                try:
+                    created.append(entregas.from_path(final, "upload", msgs.append)["nome"])
+                finally:
+                    final.unlink(missing_ok=True)
+        except ValueError as e:
+            return jsonify(ok=False, msg=str(e), skipped=skipped), 400
+        if created and request.form.get("processar"):
+            jobs.start("receber", lambda job: after_receive(job, True))
+        elif created:
+            jobs.start("conferir", lambda job: after_receive(job, False))
+        return jsonify(ok=bool(created), created=created, skipped=skipped, log=msgs)
 
     @bp.route("/admin/api/<action>", methods=["POST"])
     def action(action):
         guard()
         body = request.get_json(silent=True) or {}
-        if action in ("toggle", "delete"):
-            if jobs.state["running"]:
+        running = jobs.state["running"]
+        eid = Path(str(body.get("id", ""))).name
+        if action in ("toggle", "delete", "note"):
+            if running:
                 return busy()
-            name = Path(body.get("name", "")).name
-            if not ALLOWED_CSV.match(name):
-                abort(400)
-            on, off = raw / name, raw / (name + OFF)
-            cur = on if on.exists() else off if off.exists() else None
-            if cur is None:
+            if not (entregas.root() / eid / "manifest.json").exists():
                 abort(404)
-            if action == "delete":
-                cur.unlink()
+            if action == "toggle":
+                entregas.set_active(eid, not entregas.load(eid)["ativa"])
+            elif action == "delete":
+                entregas.delete(eid)
             else:
-                cur.rename(off if cur == on else on)
+                entregas.set_note(eid, str(body.get("nota", "")))
             return jsonify(ok=True)
+        if running:
+            return busy()
+        if action == "import_inbox":
+            return jsonify(ok=jobs.start("importar", import_inbox(str(body.get("name", "")), bool(body.get("process")))))
+        if action == "import_url":
+            url = str(body.get("url", "")).strip()
+            if not re.match(r"^https?://", url):
+                return jsonify(ok=False, msg="Cole um link que comece com http:// ou https://."), 400
+            return jsonify(ok=jobs.start("link", import_url(url, bool(body.get("process")))))
         if action == "inspect":
-            return jsonify(ok=jobs.start("conferir", inspect)) if not jobs.state["running"] else busy()
+            return jsonify(ok=jobs.start("conferir", lambda job: entregas.inspect_all(job.add, job.progress)))
         if action == "process":
-            if not any(f["active"] and f["tipo"] == "brutos" for f in files()):
-                return jsonify(ok=False, msg="Nenhum arquivo focos_brutos ativo."), 400
-            return jsonify(ok=jobs.start("processar", process)) if not jobs.state["running"] else busy()
+            if not entregas.active_files()[0]:
+                return jsonify(ok=False, msg="Nenhuma entrega ativa com focos_brutos."), 400
+            return jsonify(ok=jobs.start("processar", process))
         if action == "firms":
             try:
                 start, end = date.fromisoformat(body["start"]), date.fromisoformat(body["end"])
@@ -343,21 +301,24 @@ def create_blueprint(get_repo) -> Blueprint:
                 return jsonify(ok=False, msg="A data final é anterior à inicial."), 400
             if not config.FIRMS_MAP_KEY:
                 return jsonify(ok=False, msg="Defina FIRMS_MAP_KEY no servidor."), 400
-            return jsonify(ok=jobs.start("firms", pull_firms(start, end, bool(body.get("process"))))) if not jobs.state["running"] else busy()
+            return jsonify(ok=jobs.start("firms", pull_firms(start, end, bool(body.get("process")))))
         if action == "apply":
-            if jobs.state["running"] or not read_meta(nxt):
+            meta = read_meta(nxt)
+            if not meta:
                 return jsonify(ok=False, msg="Não há versão nova para aplicar."), 400
             shutil.rmtree(prev, ignore_errors=True)
             if config.PROCESSED_DIR.exists():
                 config.PROCESSED_DIR.rename(prev)
             nxt.rename(config.PROCESSED_DIR)
             get_repo().reload()
+            log_version(meta, "aplicada")
             return jsonify(ok=True)
         if action == "discard":
             shutil.rmtree(nxt, ignore_errors=True)
             return jsonify(ok=True)
         if action == "rollback":
-            if jobs.state["running"] or not read_meta(prev):
+            meta = read_meta(prev)
+            if not meta:
                 return jsonify(ok=False, msg="Não há versão anterior."), 400
             tmp = config.DATA_DIR / "processed_swap"
             shutil.rmtree(tmp, ignore_errors=True)
@@ -365,12 +326,13 @@ def create_blueprint(get_repo) -> Blueprint:
             prev.rename(config.PROCESSED_DIR)
             tmp.rename(prev)
             get_repo().reload()
+            log_version(meta, "restaurada")
             return jsonify(ok=True)
         if action == "publish":
             ok, why = publish.availability()
             if not ok:
                 return jsonify(ok=False, msg=why), 400
-            return jsonify(ok=jobs.start("publicar", do_publish)) if not jobs.state["running"] else busy()
+            return jsonify(ok=jobs.start("publicar", lambda job: publish.publish(job.add, job.progress)))
         abort(404)
 
     return bp

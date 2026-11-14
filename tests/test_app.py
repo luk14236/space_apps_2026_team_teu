@@ -51,8 +51,19 @@ def test_render_every_scope(app_and_repo, scope):
     panel = _callback(app, "crumbs.children")(st)
     assert panel[1]  # scope title
     to_json_plotly(list(panel))
-    fig, legend = _callback(app, "map.figure")(st)
+    fig, legend, level = _callback(app, "map.figure")(st, None)
     assert len(fig.data) >= 1
+    to_json_plotly([fig, legend, level])
+
+
+@pytest.mark.parametrize("zoom,expected", [(3, "países"), (5, "províncias"), (6.5, "departamentos"), (8, "grade"), (10, "focos individuais")])
+def test_map_level_follows_zoom(app_and_repo, zoom, expected):
+    app, repo = app_and_repo
+    st = _states(repo)["argentina"]
+    on_view = _callback(app, "mapview.data")
+    view = on_view({"map.zoom": zoom, "map.center": {"lon": -60.5, "lat": -27.5}}, st, None)
+    fig, legend, level = _callback(app, "map.figure")(st, view)
+    assert expected in level
     to_json_plotly([fig, legend])
 
 

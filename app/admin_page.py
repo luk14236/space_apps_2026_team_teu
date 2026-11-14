@@ -37,7 +37,7 @@ section{padding:16px 18px;display:flex;flex-direction:column;gap:10px}
 .chip.ok{background:var(--ok-soft);color:var(--ok)}.chip.warn{background:var(--warn-soft);color:var(--warn)}.chip.crit{background:var(--crit-soft);color:var(--crit)}.chip.acc{background:var(--accent-soft);color:var(--accent)}
 .two{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:12px}
 .box{border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;min-width:0}
-.drop{border:2px dashed var(--line);border-radius:10px;padding:22px 14px;text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center;cursor:pointer;transition:background .15s,border-color .15s}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:14px 10px;text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center;cursor:pointer;transition:background .15s,border-color .15s}
 .drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-soft)}
 .drop b{font:600 15px var(--f-d)}
 .btn{border:1px solid var(--line);background:var(--surface-2);border-radius:7px;padding:7px 13px;font-weight:500;cursor:pointer}
@@ -68,6 +68,13 @@ ul.av{margin:0;padding-left:18px;font-size:12.5px}
 .jobbar pre{max-height:200px;overflow:auto;background:rgba(0,0,0,.35);border-radius:6px;padding:8px;font:12px var(--f-m);white-space:pre-wrap;margin:6px 0 0}
 .toast{position:fixed;right:16px;top:16px;background:var(--fg);color:#fff;padding:9px 14px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20;max-width:360px}
 .toast.show{opacity:1}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.box.hl{border-color:var(--accent);background:var(--accent-soft)}
+.inp{border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}.btn.sm{padding:3px 10px;font-size:12px}
+.ups li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;align-items:center}
+.ent{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;flex-direction:column;gap:6px}.ent.off{background:var(--surface-2)}.ent.off table{opacity:.6}
+.note{font-size:12.5px;background:var(--warn-soft);border-radius:6px;padding:5px 8px}
+#hist table td{white-space:normal}
+@media (max-width:1100px){.grid4{grid-template-columns:1fr 1fr}}@media (max-width:640px){.grid4{grid-template-columns:1fr}}
 form.login{display:flex;flex-direction:column;gap:10px}form.login label{display:flex;flex-direction:column;gap:4px}
 form.login input{padding:8px 10px;border:1px solid var(--line);border-radius:7px}
 .warn{color:var(--warn)}
@@ -78,7 +85,7 @@ form.login input{padding:8px 10px;border:1px solid var(--line);border-radius:7px
 
 def page_html(csrf: str) -> str:
     body = f"""
-<header><div><h1>Atualizar dados</h1><small>Traga dados novos, confira, processe e publique, nesta ordem.</small></div>
+<header><div><h1>Atualizar dados</h1><small>Receba entregas, confira, processe e publique, nesta ordem. Cada entrega fica guardada no histórico.</small></div>
 <nav><a href="/" target=_blank rel=noopener>Calendário ↗</a><a href="/sala" target=_blank rel=noopener>Sala de Situação ↗</a>
 <form method=post action=/admin/logout><input type=hidden name=csrf value={html.escape(csrf)}><button class="btn link">Sair</button></form></nav></header>
 <main>
@@ -86,37 +93,35 @@ def page_html(csrf: str) -> str:
   <div class=tiles id=tiles></div>
 
   <section class=step id=s1><div class=num>1</div><div>
-    <div class=sh><h2>Trazer dados novos</h2><span id=c1></span></div>
-    <div class=two style="margin-top:10px">
-      <div class=box>
-        <label class=drop id=drop for=fileinput>
-          <b>Arraste os arquivos aqui</b>
-          <span class=muted>Pacote do time de dados (.tar.gz, .zip) ou CSVs <code>focos_brutos*</code> / <code>focos_mensais*</code></span>
-          <span class="btn">Escolher arquivos</span>
-        </label>
+    <div class=sh><h2>Receber dados</h2><label class=row style="gap:6px"><input type=checkbox id=autoproc checked> Processar logo depois de receber</label></div>
+    <div class=grid4 style="margin-top:10px">
+      <div class="box hl"><b>Pasta de entrada</b>
+        <span class=muted>Cole o pacote do time de dados (.tar.gz, .zip) ou os CSVs em <code id=inboxpath></code> e clique em Importar. É o jeito mais rápido para arquivos grandes.</span>
+        <ul class=ups id=inbox></ul></div>
+      <div class=box><b>Enviar do computador</b>
+        <label class=drop id=drop for=fileinput><span>Arraste os arquivos aqui</span><span class="btn">Escolher arquivos</span></label>
         <input type=file id=fileinput multiple accept=".csv,.gz,.tgz,.tar,.zip" hidden>
-        <ul class=ups id=ups></ul>
-        <small class=muted>Do pacote, só os CSVs de focos são guardados. Um arquivo com o mesmo nome substitui o anterior.</small>
-      </div>
-      <div class=box>
-        <b>Buscar dias recentes no NASA FIRMS</b>
-        <span class=muted>MODIS, S-NPP, NOAA-20 e NOAA-21 da América do Sul. O período já começa no dia seguinte ao último dado.</span>
+        <ul class=ups id=ups></ul></div>
+      <div class=box><b>Baixar de um link</b>
+        <span class=muted>Link direto do pacote (Release do GitHub, Drive com download direto, WeTransfer…).</span>
+        <input id=url type=url placeholder="https://…" class=inp><button class="btn primary" id=ubtn>Baixar e importar</button></div>
+      <div class=box><b>Dias recentes do NASA FIRMS</b>
+        <span class=muted>MODIS, S-NPP, NOAA-20 e NOAA-21 da América do Sul, a partir do último dia que já temos.</span>
         <div class=row><label>De <input type=date id=fstart></label><label>até <input type=date id=fend></label></div>
-        <label class=row><input type=checkbox id=fproc checked> Processar em seguida</label>
-        <div class=row><button class="btn primary" id=fbtn>Buscar no FIRMS</button><span id=fnote class=muted></span></div>
-      </div>
+        <div class=row><button class="btn primary" id=fbtn>Buscar no FIRMS</button><span id=fnote class=muted></span></div></div>
     </div>
+    <small class=muted>Dos pacotes, só os CSVs <code>focos_brutos*</code> e <code>focos_mensais*</code> são guardados (o .duckdb é ignorado). Uma entrega nova com os mesmos arquivos substitui a anterior no processamento, mas a anterior continua no histórico.</small>
   </div></section>
 
   <section class=step id=s2><div class=num>2</div><div>
-    <div class=sh><h2>Conferir arquivos</h2><span id=c2></span></div>
-    <p class=muted style="margin:4px 0 8px">Desligue um arquivo para deixá-lo de fora do processamento sem apagar.</p>
-    <div class=tbl id=files></div>
+    <div class=sh><h2>Entregas recebidas</h2><span id=c2></span></div>
+    <p class=muted style="margin:4px 0 8px">O processamento usa as entregas com <b>Usar</b> ligado. Desligue para deixar uma de fora sem apagar.</p>
+    <div id=entregas></div>
   </div></section>
 
   <section class=step id=s3><div class=num>3</div><div>
     <div class=sh><h2>Processar e aplicar no painel</h2><span id=c3></span></div>
-    <p class=muted style="margin:4px 0 8px">Junta os arquivos ligados sem duplicar focos e prepara uma versão nova. O painel só muda quando você clicar em <b>Aplicar</b>.</p>
+    <p class=muted style="margin:4px 0 8px">Junta as entregas ligadas sem duplicar focos e prepara uma versão nova. O painel só muda quando você clicar em <b>Aplicar</b>.</p>
     <div class=row><button class="btn primary" id=pbtn>Processar dados</button><span id=pnote class=muted></span></div>
     <div id=cand></div>
   </div></section>
@@ -126,7 +131,7 @@ def page_html(csrf: str) -> str:
     <div id=pub></div>
   </div></section>
 
-  <div id=rollback></div>
+  <section id=hist><div class=sh><h2>Histórico do painel</h2><span id=rb></span></div><div id=versions></div></section>
 </main>
 <div class=jobbar id=jobbar><div class=in>
   <div class=row style="justify-content:space-between"><b id=jtitle></b><span id=jpct style="font-family:var(--f-m)"></span></div>
@@ -146,12 +151,14 @@ const $=id=>document.getElementById(id);
 const nf=new Intl.NumberFormat('pt-BR');
 const fmt=n=>nf.format(Math.round(n||0));
 const mb=b=>b>=1e9?(b/1e9).toFixed(1).replace('.',',')+' GB':(b/1e6).toFixed(b>1e7?0:1).replace('.',',')+' MB';
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const dt=s=>!s?'—':(s.length===7?s.slice(5,7)+'/'+s.slice(0,4):s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4));
-const KIND={conferir:'Conferindo arquivos',processar:'Processando dados',firms:'Baixando do NASA FIRMS',publicar:'Publicando no site'};
+const dth=s=>s?dt(s.slice(0,10))+' '+s.slice(11,16):'—';
+const KIND={conferir:'Conferindo entregas',processar:'Processando dados',firms:'Baixando do NASA FIRMS',publicar:'Publicando no site',importar:'Importando da pasta de entrada',link:'Baixando do link',receber:'Recebendo e processando'};
+const ORIG={pasta:'pasta de entrada',upload:'enviada pelo navegador',link:'baixada de link',firms:'NASA FIRMS',migrado:'migrada'};
 let S=null,timer=null,datesSet=false,wasRunning=false;
 
-function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),3500)}
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),4000)}
 async function api(action,body){
   const r=await fetch('/admin/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF':CSRF},body:JSON.stringify(body||{})});
   let j={};try{j=await r.json()}catch(e){}
@@ -160,64 +167,75 @@ async function api(action,body){
 async function load(){
   try{const r=await fetch('/admin/api/state');if(r.status===403){location.reload();return}S=await r.json();render()}
   catch(e){toast('Sem conexão com o servidor.')}
-  clearTimeout(timer);timer=setTimeout(load,S&&S.job.running?1500:15000)}
-
-function chip(cls,t){return `<span class="chip ${cls}">${esc(t)}</span>`}
-function setStep(n,state,label){$('s'+n).className='step '+(state||'');$('c'+n).innerHTML=label||''}
+  clearTimeout(timer);timer=setTimeout(load,S&&S.job.running?1500:10000)}
+const chip=(cls,t)=>`<span class="chip ${cls}">${esc(t)}</span>`;
+function setStep(n,state,label){$('s'+n).className='step '+(state||'');if($('c'+n))$('c'+n).innerHTML=label||''}
+const auto=()=>$('autoproc').checked;
 
 function render(){
-  const L=S.live,C=S.candidate,J=S.job,local=S.mode==='local';
-  $('online').innerHTML=local?'':`<div class="callout warn"><b>Este é o site publicado.</b> Aqui você só consulta a situação dos dados. Para atualizar, use o admin na máquina do time (passos 1 a 4) e publique.</div>`;
+  const L=S.live,C=S.candidate,J=S.job,local=S.mode==='local',busy=J.running;
+  $('online').innerHTML=local?'':`<div class="callout warn"><b>Este é o site publicado.</b> Aqui você só consulta a situação dos dados. Para atualizar, use o admin na máquina do time e publique (passo 4).</div>`;
   ['s1','s2','s3','s4'].forEach(id=>$(id).hidden=!local);
   const last=S.publish.history[0];
-  $('tiles').innerHTML=
-    tile('No painel',L?fmt(L.total_focos)+' focos':'Sem dados',L?`${dt(L.inicio)} a ${dt(L.fim)} · processado em ${esc(L.gerado_em.slice(0,16))}`:'Processe para começar')+
+  $('tiles').innerHTML=tile('No painel',L?fmt(L.total_focos)+' focos':'Sem dados',L?`${dt(L.inicio)} a ${dt(L.fim)} · processado ${dth(L.gerado_em)}`:'Processe para começar')+
     tile('Versão nova',C?fmt(C.total_focos)+' focos':'Nenhuma',C?`${dt(C.inicio)} a ${dt(C.fim)} · aguardando Aplicar`:'Processe para gerar',C?'new':'')+
     tile('Online',last?dt(last.fim):(local?'—':'Este site'),last?`publicado em ${esc(last.quando)}`:(S.publish.space?esc(S.publish.space):''));
+  // 1
+  $('inboxpath').textContent=S.inbox_path;
+  $('inbox').innerHTML=S.inbox.length?S.inbox.map(f=>`<li><span><b>${esc(f.nome)}</b> <span class=muted>${mb(f.tamanho)}</span></span><button class="btn primary sm" ${busy?'disabled':''} onclick="run('import_inbox',{name:'${esc(f.nome)}',process:auto()})">Importar</button></li>`).join(''):'<li class=muted>Nenhum arquivo na pasta agora.</li>';
   if(!datesSet&&S.firms){$('fstart').value=S.firms.start;$('fend').value=S.firms.end;datesSet=true}
-  $('fbtn').disabled=J.running||!S.firms.key;$('fnote').textContent=S.firms.key?'':'Defina FIRMS_MAP_KEY no servidor.';
-  // step 1/2
-  const F=S.files,active=F.filter(f=>f.active),brutos=active.filter(f=>f.tipo==='brutos');
-  setStep(1,F.length?'done':'active',F.length?chip('ok',F.length+' arquivo'+(F.length>1?'s':'')):chip('acc','Comece aqui'));
-  const unchecked=F.filter(f=>!f.stats).length,problems=F.filter(f=>f.stats&&(f.stats.erro||(f.stats.faltando||[]).length)).length;
-  setStep(2,!F.length?'':problems?'active':unchecked?'active':'done',!F.length?'':problems?chip('crit',problems+' com problema'):unchecked?chip('warn',unchecked+' a conferir'):chip('ok','Tudo conferido'));
-  $('files').innerHTML=F.length?filesTable(F,J.running)+(unchecked?`<div class=row style="margin-top:8px"><button class="btn" onclick="run('inspect')" ${J.running?'disabled':''}>Conferir ${unchecked} arquivo${unchecked>1?'s':''}</button><span class=muted>Lê cada arquivo e mostra período, satélites e colunas.</span></div>`:''):'<p class=muted>Nenhum arquivo ainda. Envie no passo 1.</p>';
-  // step 3
-  $('pbtn').disabled=J.running||!brutos.length;
-  $('pnote').textContent=brutos.length?`${brutos.length} arquivo${brutos.length>1?'s':''} de focos ligado${brutos.length>1?'s':''}`:'Ligue pelo menos um focos_brutos no passo 2.';
+  $('fbtn').disabled=busy||!S.firms.key;$('ubtn').disabled=busy;$('fnote').textContent=S.firms.key?'':'Defina FIRMS_MAP_KEY no servidor.';
+  setStep(1,S.inbox.length?'active':(S.entregas.length?'done':'active'),'');
+  // 2
+  const E=S.entregas,act=E.filter(e=>e.ativa),pend=E.flatMap(e=>e.arquivos).filter(a=>!a.stats).length,
+        prob=E.filter(e=>e.ativa).flatMap(e=>e.arquivos).filter(a=>a.stats&&(a.stats.erro||(a.stats.faltando||[]).length)).length;
+  setStep(2,!E.length?'':(prob||pend)?'active':'done',!E.length?'':prob?chip('crit',prob+' arquivo(s) com problema'):pend?chip('warn',pend+' a conferir'):chip('ok',act.length+' em uso · '+E.length+' no histórico'));
+  $('entregas').innerHTML=E.length?E.map(e=>entrega(e,busy,E)).join('')+(pend?`<div class=row><button class=btn onclick="run('inspect')" ${busy?'disabled':''}>Conferir ${pend} arquivo(s)</button></div>`:''):'<p class=muted>Nenhuma entrega ainda. Use o passo 1.</p>';
+  // 3
+  const brutos=act.filter(e=>e.arquivos.some(a=>a.tipo==='brutos'));
+  $('pbtn').disabled=busy||!brutos.length;
+  $('pnote').textContent=brutos.length?'Vai usar: '+brutos.map(e=>e.nome).join(' + '):'Ligue pelo menos uma entrega com focos_brutos.';
   setStep(3,C?'active':(L?'done':''),C?chip('acc','Versão nova pronta'):(L?chip('ok','Painel atualizado'):''));
-  $('cand').innerHTML=C?candidate(L,C,S.candidate_diff,J.running):'';
-  // step 4
+  $('cand').innerHTML=C?candidate(L,C,S.candidate_diff,busy):'';
+  // 4
   const P=S.publish,pub=P.history[0],stale=!pub||(L&&(pub.fim!==L.fim.slice(0,10)||pub.total_focos!==L.total_focos));
   setStep(4,!P.available?'':stale?'active':'done',!P.available?chip('','Indisponível'):stale?chip('warn','Site desatualizado'):chip('ok','Site em dia'));
-  $('pub').innerHTML=publishBox(P,L,stale,J.running);
-  // rollback
-  $('rollback').innerHTML=local&&S.prev?`<section><div class=sh><div><h2>Voltar à versão anterior</h2><span class=muted>${fmt(S.prev.total_focos)} focos, ${dt(S.prev.inicio)} a ${dt(S.prev.fim)}, processada em ${esc(S.prev.gerado_em.slice(0,16))}.</span></div><button class=btn onclick="confirmRun('rollback','Trocar o painel pela versão anterior?')" ${J.running?'disabled':''}>Voltar à versão anterior</button></div></section>`:'';
+  $('pub').innerHTML=publishBox(P,L,stale,busy);
+  // history
+  $('versions').innerHTML=S.versions.length?`<table><thead><tr><th>Quando</th><th></th><th class=n>Focos</th><th>Período</th><th>Entregas usadas</th></tr></thead><tbody>${S.versions.map((v,i)=>`<tr><td>${esc(v.quando)}</td><td>${i===0?chip('ok','no painel'):chip('',v.acao)}</td><td class=n>${fmt(v.total_focos)}</td><td>${dt(v.inicio)} a ${dt(v.fim)}</td><td>${(v.entregas||[]).map(esc).join(' + ')}</td></tr>`).join('')}</tbody></table>`:'<p class=muted>Nenhuma versão aplicada por este admin ainda.</p>';
+  $('rb').innerHTML=local&&S.prev?`<button class=btn onclick="confirmRun('rollback','Trocar o painel pela versão anterior (${fmt(S.prev.total_focos)} focos, até ${dt(S.prev.fim)})?')" ${busy?'disabled':''}>Voltar à versão anterior</button>`:'';
   renderJob(J);
 }
-function tile(k,v,d,cls){return `<div class="tile ${cls||''}"><span class=k>${k}</span><span class=v>${v}</span><span class=d>${d}</span></div>`}
-function filesTable(F,busy){
-  return `<table><thead><tr><th>Usar</th><th>Arquivo</th><th class=n>Tamanho</th><th>Período</th><th class=n>Linhas</th><th>Conteúdo</th><th></th></tr></thead><tbody>`+
-  F.map(f=>{const s=f.stats;let info,period='—',rows='—';
+const tile=(k,v,d,cls)=>`<div class="tile ${cls||''}"><span class=k>${k}</span><span class=v>${v}</span><span class=d>${d}</span></div>`;
+function entrega(e,busy,E){
+  const sub=e.substituida_por?E.find(x=>x.id===e.substituida_por):null;
+  const st=e.ativa?chip('ok','em uso'):(sub?chip('','substituída por '+sub.nome):chip('','desligada'));
+  const rows=e.arquivos.map(a=>{const s=a.stats;let info,period='—',rows='—';
     if(!s)info=chip('warn','não conferido');
-    else if(s.erro)info=chip('crit','erro ao ler')+`<div class=muted>${esc(s.erro)}</div>`;
+    else if(s.erro)info=chip('crit','erro ao ler')+` <span class=muted>${esc(s.erro)}</span>`;
     else{period=`${dt(s.inicio)} a ${dt(s.fim)}`;rows=fmt(s.linhas);
-      info=f.tipo==='mensais'?chip('','totais mensais')+' '+chip('',fmt(s.total)+' focos'):
+      info=a.tipo==='mensais'?chip('','totais mensais')+' '+chip('',fmt(s.total)+' focos'):
         ((s.faltando||[]).length?chip('crit','falta: '+s.faltando.join(', ')):chip('ok','colunas ok'))+' '+(s.satelites||[]).map(x=>chip('',x)).join(' ')+
         ((s.extras||[]).length?' '+chip('acc','+ '+s.extras.join(', ')):'')+(s.paises?` <span class=muted>${s.paises} países</span>`:'')}
-    return `<tr class="${f.active?'':'off'}"><td><label class=sw title="Usar no processamento"><input type=checkbox ${f.active?'checked':''} ${busy?'disabled':''} onchange="run('toggle',{name:'${esc(f.name)}'})"><span></span></label></td>
-      <td><b>${esc(f.name)}</b><div class=muted>${f.tipo==='brutos'?'focos individuais':'totais mensais (conferência)'}</div></td><td class=n>${mb(f.size)}</td><td>${period}</td><td class=n>${rows}</td><td>${info}</td>
-      <td><button class="btn link" ${busy?'disabled':''} onclick="confirmRun('delete','Apagar ${esc(f.name)}?',{name:'${esc(f.name)}'})">Apagar</button></td></tr>`}).join('')+'</tbody></table>'}
+    return `<tr><td><b>${esc(a.nome)}</b></td><td class=n>${mb(a.tamanho)}</td><td>${period}</td><td class=n>${rows}</td><td>${info}</td></tr>`}).join('');
+  return `<div class="ent ${e.ativa?'':'off'}"><div class=sh>
+      <div class=row><label class=sw title="Usar no processamento"><input type=checkbox ${e.ativa?'checked':''} ${busy?'disabled':''} onchange="run('toggle',{id:'${e.id}'})"><span></span></label>
+      <div><b>${esc(e.nome)}</b> ${st}<div class=muted>${dth(e.recebido_em)} · ${ORIG[e.origem]||esc(e.origem)}</div></div></div>
+      <div class=row><button class="btn link" onclick="note('${e.id}')">${e.nota?'Editar nota':'Adicionar nota'}</button>
+      <button class="btn link" ${busy?'disabled':''} onclick="confirmRun('delete','Apagar a entrega ${esc(e.nome)} do histórico? Os arquivos dela serão removidos.',{id:'${e.id}'})">Apagar</button></div></div>
+    ${e.nota?`<div class=note>${esc(e.nota)}</div>`:''}
+    <div class=tbl><table><thead><tr><th>Arquivo</th><th class=n>Tamanho</th><th>Período</th><th class=n>Linhas</th><th>Conteúdo</th></tr></thead><tbody>${rows}</tbody></table></div></div>`}
 function candidate(L,C,D,busy){
-  const rows=[['Focos',L?fmt(L.total_focos):'—',fmt(C.total_focos)+(D&&L?` (${D.delta_focos>=0?'+':''}${fmt(D.delta_focos)})`:'')],
+  const rows=[['Focos',L?fmt(L.total_focos):'—',fmt(C.total_focos)+(L?` (${D.delta_focos>=0?'+':''}${fmt(D.delta_focos)})`:'')],
     ['Período',L?`${dt(L.inicio)} a ${dt(L.fim)}`:'—',`${dt(C.inicio)} a ${dt(C.fim)}`],
     ['Satélites',L?L.satelites.join(', '):'—',C.satelites.join(', ')],
     ['Colunas extras',L?(L.colunas_extras.join(', ')||'nenhuma'):'—',C.colunas_extras.join(', ')||'nenhuma'],
-    ['Harmonização',L?(L.tem_harmonizacao?'sim':'não'):'—',C.tem_harmonizacao?'sim':'não (falta peso_harm)']];
+    ['Harmonização',L?(L.tem_harmonizacao?'sim':'não'):'—',C.tem_harmonizacao?'sim':'não (falta peso_harm)'],
+    ['Entregas',L?((L.entregas||[]).map(e=>e.nome).join(' + ')||(L.fonte||[]).join(', ')):'—',(C.entregas||[]).map(e=>e.nome).join(' + ')]];
   const av=(D.novos_avisos.length?`<h3>Avisos novos</h3><ul class=av>${D.novos_avisos.map(a=>`<li class=warn>${esc(a)}</li>`).join('')}</ul>`:'')+
            (D.avisos_resolvidos.length?`<h3>Avisos resolvidos</h3><ul class=av>${D.avisos_resolvidos.map(a=>`<li style="color:var(--ok)">${esc(a)}</li>`).join('')}</ul>`:'');
   return `<div class="callout acc" style="margin-top:10px"><div class=cmp><span class=h></span><span class=h>No painel</span><span class=h>Versão nova</span>`+
-    rows.map(r=>`<span class=muted>${r[0]}</span><span>${r[1]}</span><span class=new>${r[2]}</span>`).join('')+`</div>${av}
+    rows.map(r=>`<span class=muted>${r[0]}</span><span>${esc(r[1])}</span><span class=new>${esc(r[2])}</span>`).join('')+`</div>${av}
     <div class=row style="margin-top:10px"><button class="btn ok" onclick="run('apply')" ${busy?'disabled':''}>Aplicar no painel</button>
     <button class=btn onclick="confirmRun('discard','Descartar a versão nova?')" ${busy?'disabled':''}>Descartar</button>
     <span class=muted>Aplicar troca os dados do painel na hora, sem reiniciar.</span></div></div>`}
@@ -229,23 +247,20 @@ function publishBox(P,L,stale,busy){
     <span class=muted>${stale?'O site está com dados diferentes do painel.':'O site já tem esta versão.'}</span></div>
     ${h?`<h3>Últimas publicações</h3><ul class=av>${h}</ul>`:''}`}
 function renderJob(J){
-  const bar=$('jobbar');const show=J.running||(J.finished&&Date.now()/1000-J.finished<8);
-  bar.classList.toggle('show',!!show);
-  if(!show){if(wasRunning)wasRunning=false;return}
+  const show=J.running||(J.finished&&Date.now()/1000-J.finished<8);$('jobbar').classList.toggle('show',!!show);
+  if(!show){wasRunning=false;return}
   $('jtitle').textContent=(KIND[J.kind]||'Tarefa')+(J.running?' · '+(J.stage||''):(J.ok?' · concluído':' · falhou'));
   $('jpct').textContent=J.running?J.pct+'%':(J.ok?'✓':'!');
   $('jbar').style.width=(J.running?J.pct:100)+'%';$('jbarw').className='bar big'+(J.running?'':(J.ok?' ok':' crit'));
-  const pre=$('jlog');const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-4;pre.textContent=J.log.join('\n');if(atEnd)pre.scrollTop=pre.scrollHeight;
+  const pre=$('jlog'),atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-4;pre.textContent=J.log.join('\n');if(atEnd)pre.scrollTop=pre.scrollHeight;
   if(!J.running&&wasRunning){toast(J.ok?(KIND[J.kind]+': concluído.'):('Falhou: '+(J.error||'veja os detalhes')));if(!J.ok)$('jdet').open=true}
   wasRunning=J.running}
-
 async function run(action,body){if(await api(action,body)){if(action==='apply')toast('Painel atualizado.');if(action==='rollback')toast('Versão anterior restaurada.')}load()}
 function confirmRun(action,msg,body){if(confirm(msg))run(action,body)}
-
-$('fbtn').onclick=()=>run('firms',{start:$('fstart').value,end:$('fend').value,process:$('fproc').checked});
+function note(id){const e=S.entregas.find(x=>x.id===id);const v=prompt('Nota sobre esta entrega (quem enviou, o que mudou…):',e.nota||'');if(v!==null)run('note',{id,nota:v})}
+$('fbtn').onclick=()=>run('firms',{start:$('fstart').value,end:$('fend').value,process:auto()});
+$('ubtn').onclick=()=>run('import_url',{url:$('url').value,process:auto()});
 $('pbtn').onclick=()=>run('process');
-
-// upload with per-file progress
 const drop=$('drop'),inp=$('fileinput');
 ['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
@@ -253,19 +268,15 @@ drop.addEventListener('drop',ev=>send([...ev.dataTransfer.files]));
 inp.addEventListener('change',()=>{send([...inp.files]);inp.value=''});
 async function send(list){
   if(!list.length)return;
-  const ul=$('ups');let any=false;
-  for(const f of list){
-    const li=document.createElement('li');li.innerHTML=`<span>${esc(f.name)} <span class=muted>${mb(f.size)}</span></span><span class=st>0%</span><div class=bar><i style="width:0"></i></div>`;ul.prepend(li);
-    const res=await new Promise(ok=>{const x=new XMLHttpRequest();x.open('POST','/admin/upload');x.setRequestHeader('X-CSRF',CSRF);
-      x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);li.querySelector('i').style.width=p+'%';li.querySelector('.st').textContent=p<100?p+'%':'extraindo…'}};
-      x.onload=()=>{let j={};try{j=JSON.parse(x.responseText)}catch(e){}ok({status:x.status,j})};x.onerror=()=>ok({status:0,j:{}});
-      const fd=new FormData();fd.append('arquivos',f);x.send(fd)});
-    const st=li.querySelector('.st');
-    if(res.status===200&&res.j.saved&&res.j.saved.length){any=true;st.innerHTML=chip('ok','recebido: '+res.j.saved.join(', '));li.querySelector('.bar').className='bar ok'}
-    else{st.innerHTML=chip('crit',res.j.msg||(res.j.skipped&&res.j.skipped.length?'nenhum CSV de focos no arquivo':'falhou ('+res.status+')'));li.querySelector('.bar').className='bar crit'}
-    if(res.j.skipped&&res.j.skipped.length&&res.j.saved&&res.j.saved.length)st.innerHTML+=' '+chip('','ignorados: '+res.j.skipped.length)}
-  await load();
-  if(any&&S.files.some(f=>!f.stats))run('inspect');
-}
+  const total=list.reduce((a,f)=>a+f.size,0),li=document.createElement('li');
+  li.innerHTML=`<span>${list.map(f=>esc(f.name)).join(', ')} <span class=muted>${mb(total)}</span></span><span class=st>0%</span><div class=bar><i style="width:0"></i></div>`;$('ups').prepend(li);
+  const res=await new Promise(ok=>{const x=new XMLHttpRequest();x.open('POST','/admin/upload');x.setRequestHeader('X-CSRF',CSRF);
+    x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);li.querySelector('i').style.width=p+'%';li.querySelector('.st').textContent=p<100?p+'%':'extraindo…'}};
+    x.onload=()=>{let j={};try{j=JSON.parse(x.responseText)}catch(e){}ok({status:x.status,j})};x.onerror=()=>ok({status:0,j:{}});
+    const fd=new FormData();list.forEach(f=>fd.append('arquivos',f));if(auto())fd.append('processar','1');x.send(fd)});
+  const st=li.querySelector('.st');
+  if(res.status===200&&res.j.ok){st.innerHTML=chip('ok','entrega criada');li.querySelector('.bar').className='bar ok'}
+  else{st.innerHTML=chip('crit',res.j.msg||'falhou ('+res.status+')');li.querySelector('.bar').className='bar crit'}
+  load()}
 load();
 """

@@ -58,12 +58,18 @@ def assign_departments(lon: np.ndarray, lat: np.ndarray, geo_dir: Path) -> tuple
     return dep_ids[out], prov_ids[out]
 
 
-def run(raw: Path, out: Path, geo_dir: Path, log: Callable[[str], None] = print) -> dict:
-    raw, out = Path(raw), Path(out)
-    brutos = sorted(raw.glob("focos_brutos*.csv"))
-    mensais = sorted(raw.glob("focos_mensais*.csv"))
+def run(raw: Path | None, out: Path, geo_dir: Path, log: Callable[[str], None] = print,
+        files: tuple[list[Path], list[Path]] | None = None, entregas: list[dict] | None = None) -> dict:
+    """raw: folder with focos_*.csv, or pass `files` = (brutos, mensais) explicitly (admin deliveries)."""
+    out = Path(out)
+    if files is not None:
+        brutos, mensais = list(files[0]), list(files[1])
+    else:
+        raw = Path(raw)
+        brutos = sorted(raw.glob("focos_brutos*.csv"))
+        mensais = sorted(raw.glob("focos_mensais*.csv"))
     if not brutos:
-        raise PrepareError(f"Nenhum arquivo focos_brutos*.csv em {raw}")
+        raise PrepareError("Nenhum arquivo focos_brutos*.csv para processar.")
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     say = lambda m: log(f"[{time.time() - t0:6.1f}s] {m}")  # noqa: E731
@@ -132,13 +138,14 @@ def run(raw: Path, out: Path, geo_dir: Path, log: Callable[[str], None] = print)
     warnings += [f"Coluna '{c}' ausente" + (" (série harmonizada indisponível)" if c == "peso_harm" else "") for c in OPTIONAL if c not in extra]
     if mensais:
         diff = con.execute(f"""WITH m AS (SELECT {iso_case} iso3, ano, mes, upper(satelite) satelite, SUM(nfocos) n
-              FROM read_csv('{mensais[0].as_posix()}', header=true) GROUP BY ALL),
+              FROM read_csv([{', '.join("'" + m.as_posix() + "'" for m in mensais)}], header=true, union_by_name=true) GROUP BY ALL),
             a AS (SELECT iso3, ano, mes, satelite, SUM(n) n FROM read_parquet('{P('agg_pais.parquet')}') GROUP BY ALL)
             SELECT COUNT(*) FROM m LEFT JOIN a USING (iso3, ano, mes, satelite) WHERE m.n IS DISTINCT FROM a.n""").fetchone()[0]
         if diff:
             warnings.append(f"{diff} combinações país/mês/satélite em que focos_mensais não bate com focos_brutos")
 
     meta = {"gerado_em": time.strftime("%Y-%m-%d %H:%M:%S"), "fonte": [b.name for b in brutos], "total_focos": total,
+            "entregas": [{"id": e["id"], "nome": e["nome"]} for e in (entregas or [])],
             "inicio": str(tmin), "fim": str(tmax), "satelites": sats, "colunas_extras": extra,
             "tem_harmonizacao": "peso_harm" in extra, "avisos": warnings}
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
