@@ -1,14 +1,17 @@
-"""/admin: upload deliveries, pull recent days from FIRMS, rebuild the processed data and swap it in.
+"""/admin: guided data update — bring new data, check it, process, apply to the dashboard, publish online.
 
 AI-assisted: written with Claude (Anthropic) and reviewed by the team.
 
-Access: user + password login (ADMIN_USER / ADMIN_PASSWORD, read from the environment or .env).
-Without them the admin is disabled. The page is not linked from the public UI.
+Access: user + password login (ADMIN_USER / ADMIN_PASSWORD from the environment or .env); disabled without them.
+The page is not linked from the public UI. The page itself (HTML/JS) lives in admin_page.py; this module is the
+JSON API it calls. Processing builds a *candidate* in data/processed_next; "Aplicar" swaps it in (the old version is
+kept in data/processed_prev for "Voltar à versão anterior").
 """
 from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import secrets
 import shutil
@@ -20,38 +23,44 @@ from collections import deque
 from datetime import date, timedelta
 from pathlib import Path
 
+import duckdb
 from flask import Blueprint, Response, abort, jsonify, redirect, request, session
 
 from . import config
-from .pipeline import firms, prepare
+from .admin_page import page_html, shell
+from .pipeline import firms, prepare, publish
 
 ALLOWED_CSV = re.compile(r"^focos_(brutos|mensais)[\w.\-]*\.csv$", re.I)
 ARCHIVE = re.compile(r"\.(tar\.gz|tgz|tar|zip)$", re.I)
+OFF = ".off"  # a file renamed to *.csv.off is kept but not used
 
 
 class Jobs:
-    """One background job at a time (processing or FIRMS download), with a rolling log."""
+    """One background job at a time, with a rolling log and a progress estimate."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.log: deque[str] = deque(maxlen=400)
-        self.state = {"running": False, "kind": None, "started": None, "finished": None, "ok": None, "error": None}
+        self.state = {"running": False, "kind": None, "started": None, "finished": None, "ok": None, "error": None, "pct": 0, "stage": ""}
 
     def add(self, msg: str) -> None:
         self.log.append(f"{time.strftime('%H:%M:%S')}  {msg}")
+
+    def progress(self, pct: float, stage: str) -> None:
+        self.state.update(pct=round(pct), stage=stage)
 
     def start(self, kind: str, fn) -> bool:
         with self.lock:
             if self.state["running"]:
                 return False
-            self.state.update(running=True, kind=kind, started=time.time(), finished=None, ok=None, error=None)
+            self.state.update(running=True, kind=kind, started=time.time(), finished=None, ok=None, error=None, pct=0, stage="Iniciando")
         self.log.clear()
 
         def target():
             try:
-                fn(self.add)
-                self.state.update(ok=True)
-            except Exception as e:  # noqa: BLE001 - reported to the admin page
+                fn(self)
+                self.state.update(ok=True, pct=100)
+            except Exception as e:  # noqa: BLE001 - shown on the admin page
                 self.add(f"ERRO: {e}")
                 self.state.update(ok=False, error=str(e))
             finally:
@@ -60,18 +69,31 @@ class Jobs:
         return True
 
 
-def human(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
+def read_meta(d: Path) -> dict | None:
+    p = d / "meta.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def diff(old: dict | None, new: dict) -> dict:
+    o_av, n_av = set((old or {}).get("avisos", [])), set(new.get("avisos", []))
+    return {"delta_focos": new["total_focos"] - (old or {}).get("total_focos", 0),
+            "novos_avisos": sorted(n_av - o_av), "avisos_resolvidos": sorted(o_av - n_av),
+            "novas_colunas": sorted(set(new.get("colunas_extras", [])) - set((old or {}).get("colunas_extras", []))),
+            "novos_satelites": sorted(set(new.get("satelites", [])) - set((old or {}).get("satelites", [])))}
+
+
+PREP_STAGES = [("lendo", 5, "Lendo os arquivos"), ("focos_outros", 40, "Outros países gravados"), ("Argentina:", 45, "Atribuindo províncias e departamentos"),
+               ("focos_arg", 70, "Argentina gravada"), ("agg_", 75, "Agregados mensais"), ("dia_", 82, "Agregados diários"),
+               ("cell_", 90, "Grades do mapa"), ("meta.json", 98, "Conferindo a qualidade")]
+FIRMS_LINE = re.compile(r"^\S+\s+\d{4}-\d{2}-\d{2} \+\d+d")
 
 
 def create_blueprint(get_repo) -> Blueprint:
     bp = Blueprint("admin", __name__)
     jobs = Jobs()
     raw: Path = config.RAW_DIR
+    nxt, prev = config.DATA_DIR / "processed_next", config.DATA_DIR / "processed_prev"
+    stats_path = raw / ".stats.json"
 
     # ---------------------------------------------------------------- access
     def configured() -> bool:
@@ -80,45 +102,115 @@ def create_blueprint(get_repo) -> Blueprint:
     def allowed() -> bool:
         return configured() and session.get("admin") is True
 
-    def guard():
-        if not allowed():
-            abort(403)
-        if request.method == "POST" and request.form.get("csrf") != session.get("csrf"):
-            abort(400, "Formulário expirado. Recarregue a página.")
-
     def csrf() -> str:
         session.setdefault("csrf", secrets.token_hex(16))
         return session["csrf"]
 
+    def guard():
+        if not allowed():
+            abort(403)
+        tok = request.headers.get("X-CSRF") or request.form.get("csrf")
+        if not tok or tok != session.get("csrf"):
+            abort(400, "Sessão expirada. Recarregue a página.")
+
+    # ---------------------------------------------------------------- raw files + quick stats
+    def load_stats() -> dict:
+        try:
+            return json.loads(stats_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def files() -> list[dict]:
+        st = load_stats()
+        out = []
+        for p in sorted(raw.glob("focos_*.csv*")) if raw.exists() else []:
+            if not (p.name.endswith(".csv") or p.name.endswith(".csv" + OFF)):
+                continue
+            base = p.name[:-len(OFF)] if p.name.endswith(OFF) else p.name
+            s = p.stat()
+            cached = st.get(base)
+            fresh = cached if cached and cached.get("size") == s.st_size and cached.get("mtime") == int(s.st_mtime) else None
+            out.append({"name": base, "active": not p.name.endswith(OFF), "size": s.st_size, "mtime": int(s.st_mtime),
+                        "tipo": "brutos" if "brutos" in base else "mensais", "stats": fresh})
+        return out
+
+    def inspect(job: Jobs) -> None:
+        st = load_stats()
+        todo = [f for f in files() if not f["stats"]]
+        con = duckdb.connect()
+        for k, f in enumerate(todo):
+            job.progress(5 + 90 * k / max(len(todo), 1), f"Conferindo {f['name']}")
+            path = raw / (f["name"] if f["active"] else f["name"] + OFF)
+            job.add(f"Conferindo {f['name']} ({f['size'] / 1e6:.0f} MB)…")
+            src = f"read_csv('{path.as_posix()}', header=true)"
+            info = {"size": f["size"], "mtime": f["mtime"]}
+            try:
+                cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()]
+                if f["tipo"] == "brutos":
+                    miss = [c for c in prepare.REQUIRED if c not in cols]
+                    info["faltando"] = miss
+                    info["extras"] = [c for c in prepare.OPTIONAL if c in cols]
+                    if not miss:
+                        r = con.execute(f"""SELECT COUNT(*), MIN(data_hora_gmt), MAX(data_hora_gmt), list(DISTINCT upper(satelite) ORDER BY 1),
+                                               COUNT(DISTINCT pais) FROM {src}""").fetchone()
+                        info.update(linhas=r[0], inicio=str(r[1])[:10], fim=str(r[2])[:10], satelites=sorted(r[3]), paises=r[4])
+                else:
+                    r = con.execute(f"SELECT COUNT(*), MIN(ano*100+mes), MAX(ano*100+mes), SUM(nfocos) FROM {src}").fetchone()
+                    info.update(linhas=r[0], inicio=f"{r[1] // 100}-{r[1] % 100:02d}", fim=f"{r[2] // 100}-{r[2] % 100:02d}", total=int(r[3] or 0))
+            except Exception as e:  # noqa: BLE001
+                info["erro"] = str(e).splitlines()[0][:200]
+            st[f["name"]] = info
+            stats_path.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        job.add("Arquivos conferidos.")
+
     # ---------------------------------------------------------------- jobs
-    def rebuild(log) -> None:
-        nxt, cur, old = config.DATA_DIR / "processed_next", config.PROCESSED_DIR, config.DATA_DIR / "processed_old"
+    def process(job: Jobs) -> None:
         shutil.rmtree(nxt, ignore_errors=True)
+
+        def log(m: str):
+            job.add(m)
+            for key, pct, stage in PREP_STAGES:
+                if key in m:
+                    job.progress(pct, stage)
         meta = prepare.run(raw, nxt, config.GEO_DIR, log=log)
-        shutil.rmtree(old, ignore_errors=True)
-        if cur.exists():
-            cur.rename(old)
-        nxt.rename(cur)
-        get_repo().reload()
-        shutil.rmtree(old, ignore_errors=True)
-        log(f"Dados atualizados: {meta['total_focos']:,} focos, {meta['inicio'][:10]} a {meta['fim'][:10]}. O painel já usa a nova versão.")
+        job.add(f"Nova versão pronta: {meta['total_focos']:,} focos, {meta['inicio'][:10]} a {meta['fim'][:10]}. Confira e clique em Aplicar.".replace(",", "."))
 
-    def pull_firms(start: date, end: date, then_rebuild: bool):
-        def job(log):
+    def pull_firms(start: date, end: date, then_process: bool):
+        def run(job: Jobs) -> None:
+            total = 4 * math.ceil(((end - start).days + 1) / firms.MAX_DAYS)
+            done = [0]
+
+            def log(m: str):
+                job.add(m)
+                if FIRMS_LINE.match(m):
+                    done[0] += 1
+                    job.progress(min(95, done[0] / total * (60 if then_process else 95)), f"Baixando do FIRMS ({done[0]}/{total})")
             path = firms.run(start, end, raw, config.FIRMS_MAP_KEY, config.GEO_DIR, log=log)
-            if path and then_rebuild:
-                log("Reprocessando com os focos novos…")
-                rebuild(log)
-        return job
+            if path and then_process:
+                job.add("Processando com os focos novos…")
+                base = job.progress
 
-    # ---------------------------------------------------------------- routes
+                def scaled(p, s):
+                    base(60 + p * 0.4, s)
+                job.progress = scaled
+                try:
+                    process(job)
+                finally:
+                    job.progress = base
+        return run
+
+    def do_publish(job: Jobs) -> None:
+        publish.publish(job.add, job.progress)
+
+    # ---------------------------------------------------------------- pages
     @bp.route("/admin", methods=["GET"])
     def page():
+        if not configured():
+            return Response(shell("Admin desativado", "<main class=narrow><section><h2>Admin desativado</h2><p>Defina ADMIN_USER e ADMIN_PASSWORD no servidor.</p></section></main>"),
+                            403, mimetype="text/html")
         if not allowed():
-            if configured():
-                return Response(render_login(csrf(), request.args.get("erro")), mimetype="text/html")
-            return Response(render_message("Admin desativado", "Defina ADMIN_USER e ADMIN_PASSWORD no servidor (variáveis de ambiente ou arquivo .env)."), 403, mimetype="text/html")
-        return Response(render_page(), mimetype="text/html")
+            return Response(login_html(csrf(), request.args.get("erro")), mimetype="text/html")
+        return Response(page_html(csrf()), mimetype="text/html")
 
     @bp.route("/admin/login", methods=["POST"])
     def login():
@@ -135,14 +227,33 @@ def create_blueprint(get_repo) -> Blueprint:
 
     @bp.route("/admin/logout", methods=["POST"])
     def logout():
-        session.pop("admin", None)
+        session.clear()
         return redirect("/admin")
+
+    # ---------------------------------------------------------------- API
+    @bp.route("/admin/api/state")
+    def state():
+        if not allowed():
+            abort(403)
+        live, cand, old = read_meta(config.PROCESSED_DIR), read_meta(nxt), read_meta(prev)
+        last = date.fromisoformat(live["fim"][:10]) if live else date(date.today().year, 1, 1) - timedelta(days=1)
+        ok_pub, why = publish.availability()
+        return jsonify(
+            mode="online" if config.ON_SPACE else "local",
+            live=live, candidate=cand, candidate_diff=diff(live, cand) if cand else None, prev=old,
+            files=files(), job={**jobs.state, "log": list(jobs.log)[-200:]},
+            firms={"key": bool(config.FIRMS_MAP_KEY), "start": min(last + timedelta(days=1), date.today()).isoformat(), "end": date.today().isoformat()},
+            publish={"available": ok_pub, "reason": why, "space": config.HF_SPACE, "site": config.SITE_URL, "history": publish.history()[:5]},
+        )
+
+    def busy():
+        return jsonify(ok=False, msg="Já existe uma tarefa em andamento."), 409
 
     @bp.route("/admin/upload", methods=["POST"])
     def upload():
         guard()
         if jobs.state["running"]:
-            return redirect("/admin?msg=" + "Aguarde a tarefa em andamento terminar.")
+            return busy()
         raw.mkdir(parents=True, exist_ok=True)
         saved, skipped = [], []
         for f in request.files.getlist("arquivos"):
@@ -151,6 +262,7 @@ def create_blueprint(get_repo) -> Blueprint:
                 tmp = raw / (name + ".part")
                 f.save(tmp)
                 tmp.replace(raw / name)
+                (raw / (name + OFF)).unlink(missing_ok=True)
                 saved.append(name)
             elif ARCHIVE.search(name):
                 tmp = config.DATA_DIR / "upload.tmp"
@@ -161,168 +273,113 @@ def create_blueprint(get_repo) -> Blueprint:
                 skipped += k
             elif name:
                 skipped.append(name)
-        msg = (f"Recebido: {', '.join(saved)}." if saved else "Nenhum arquivo aceito.") + \
-              (f" Ignorado: {', '.join(skipped)} (só focos_brutos*.csv e focos_mensais*.csv)." if skipped else "")
-        if saved and request.form.get("processar"):
-            jobs.start("processar", rebuild)
-            msg += " Processamento iniciado."
-        return redirect("/admin?msg=" + msg)
+        if request.headers.get("X-CSRF"):
+            return jsonify(ok=bool(saved), saved=saved, skipped=skipped)
+        return redirect("/admin")
 
     def extract(path: Path, name: str):
         saved, skipped = [], []
+
+        def write(src, base):
+            with open(raw / (base + ".part"), "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+            (raw / (base + ".part")).replace(raw / base)
+            (raw / (base + OFF)).unlink(missing_ok=True)
+            saved.append(base)
         if name.lower().endswith(".zip"):
             with zipfile.ZipFile(path) as z:
                 for info in z.infolist():
                     base = Path(info.filename).name
-                    if not info.is_dir() and ALLOWED_CSV.match(base):
-                        with z.open(info) as src, open(raw / (base + ".part"), "wb") as dst:
-                            shutil.copyfileobj(src, dst, 1 << 20)
-                        (raw / (base + ".part")).replace(raw / base)
-                        saved.append(base)
-                    elif not info.is_dir():
+                    if info.is_dir():
+                        continue
+                    if ALLOWED_CSV.match(base):
+                        with z.open(info) as src:
+                            write(src, base)
+                    else:
                         skipped.append(base)
         else:
             with tarfile.open(path, "r:*") as t:
                 for m in t:
                     base = Path(m.name).name
-                    if m.isfile() and ALLOWED_CSV.match(base):
-                        src = t.extractfile(m)
-                        with open(raw / (base + ".part"), "wb") as dst:
-                            shutil.copyfileobj(src, dst, 1 << 20)
-                        (raw / (base + ".part")).replace(raw / base)
-                        saved.append(base)
-                    elif m.isfile():
+                    if not m.isfile():
+                        continue
+                    if ALLOWED_CSV.match(base):
+                        write(t.extractfile(m), base)
+                    else:
                         skipped.append(base)
         return saved, skipped
 
-    @bp.route("/admin/delete", methods=["POST"])
-    def delete():
+    @bp.route("/admin/api/<action>", methods=["POST"])
+    def action(action):
         guard()
-        name = Path(request.form.get("nome", "")).name
-        target = raw / name
-        if ALLOWED_CSV.match(name) and target.exists() and not jobs.state["running"]:
-            target.unlink()
-            return redirect("/admin?msg=" + f"{name} removido. Reprocesse para aplicar.")
-        return redirect("/admin?msg=Não foi possível remover.")
-
-    @bp.route("/admin/process", methods=["POST"])
-    def process():
-        guard()
-        ok = jobs.start("processar", rebuild)
-        return redirect("/admin?msg=" + ("Processamento iniciado." if ok else "Já existe uma tarefa em andamento."))
-
-    @bp.route("/admin/firms", methods=["POST"])
-    def firms_route():
-        guard()
-        try:
-            start = date.fromisoformat(request.form["inicio"])
-            end = date.fromisoformat(request.form["fim"])
-        except (KeyError, ValueError):
-            return redirect("/admin?msg=Datas inválidas.")
-        if end < start:
-            return redirect("/admin?msg=A data final é anterior à inicial.")
-        ok = jobs.start("firms", pull_firms(start, end, bool(request.form.get("processar"))))
-        return redirect("/admin?msg=" + ("Download do FIRMS iniciado." if ok else "Já existe uma tarefa em andamento."))
-
-    @bp.route("/admin/status")
-    def status():
-        if not allowed():
-            abort(403)
-        return jsonify(state=jobs.state, log=list(jobs.log))
-
-    # ---------------------------------------------------------------- html
-    def render_page() -> str:
-        meta_path = config.PROCESSED_DIR / "meta.json"
-        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else None
-        files = sorted(raw.glob("*.csv")) if raw.exists() else []
-        msg = request.args.get("msg", "")
-        tok = csrf()
-        rows = "".join(
-            f"<tr><td>{html.escape(p.name)}</td><td class=num>{human(p.stat().st_size)}</td>"
-            f"<td>{time.strftime('%d/%m/%Y %H:%M', time.localtime(p.stat().st_mtime))}</td>"
-            f"<td><form method=post action=/admin/delete onsubmit=\"return confirm('Remover {html.escape(p.name)}?')\">"
-            f"<input type=hidden name=csrf value={tok}><input type=hidden name=nome value=\"{html.escape(p.name)}\">"
-            f"<button class=link>Remover</button></form></td></tr>" for p in files) or "<tr><td colspan=4 class=muted>Nenhum arquivo em data/raw.</td></tr>"
-        if meta:
-            avisos = "".join(f"<li>{html.escape(a)}</li>" for a in meta["avisos"]) or "<li>Nenhum.</li>"
-            fontes = meta["fonte"] if isinstance(meta["fonte"], list) else [meta["fonte"]]
-            status = (f"<dl><dt>Focos</dt><dd>{meta['total_focos']:,}".replace(",", ".") + "</dd>"
-                      f"<dt>Período</dt><dd>{meta['inicio'][:10]} a {meta['fim'][:10]}</dd>"
-                      f"<dt>Satélites</dt><dd>{', '.join(meta['satelites'])}</dd>"
-                      f"<dt>Harmonização</dt><dd>{'sim' if meta['tem_harmonizacao'] else 'não (falta peso_harm)'}</dd>"
-                      f"<dt>Processado em</dt><dd>{meta['gerado_em']}</dd>"
-                      f"<dt>Arquivos</dt><dd>{html.escape(', '.join(fontes))}</dd></dl><h3>Avisos</h3><ul>{avisos}</ul>")
-        else:
-            status = "<p class=muted>Ainda não há dados processados.</p>"
-        last = meta["fim"][:10] if meta else f"{date.today().year}-01-01"
-        start = (date.fromisoformat(last) + timedelta(days=1)) if meta else date.fromisoformat(last)
-        start = min(start, date.today())
-        key_ok = bool(config.FIRMS_MAP_KEY)
-        body = f"""
-<header><div><h1>Admin · Calendário de Focos</h1><small>Envie as entregas do time de dados, puxe os dias recentes do FIRMS e atualize o painel.</small></div>
-<nav><a href="/">Painel</a><a href="/sala">Sala de Situação</a><form method=post action=/admin/logout><input type=hidden name=csrf value={tok}><button class=link>Sair</button></form></nav></header>
-{f'<p class=flash>{html.escape(msg)}</p>' if msg else ''}
-<main>
-<section><h2>1. Enviar arquivos</h2>
-<p class=muted>Aceita <code>focos_brutos*.csv</code>, <code>focos_mensais*.csv</code> ou o pacote do time de dados (<code>.tar.gz</code>, <code>.zip</code>): só esses CSVs são extraídos. Arquivo com o mesmo nome é substituído.</p>
-<form method=post action=/admin/upload enctype=multipart/form-data>
-<input type=hidden name=csrf value={tok}><input type=file name=arquivos multiple required accept=".csv,.gz,.tgz,.tar,.zip">
-<label><input type=checkbox name=processar value=1 checked> Processar logo depois do envio</label>
-<button class=primary>Enviar</button></form>
-<h3>Arquivos em <code>data/raw</code></h3><table><thead><tr><th>Arquivo</th><th>Tamanho</th><th>Modificado</th><th></th></tr></thead><tbody>{rows}</tbody></table>
-</section>
-<section><h2>2. Dias recentes do NASA FIRMS</h2>
-<p class=muted>Baixa MODIS, S-NPP, NOAA-20 e NOAA-21 da América do Sul (científico quando publicado, senão tempo quase real) e grava em <code>data/raw</code>.</p>
-{'' if key_ok else '<p class=warn>Defina FIRMS_MAP_KEY no servidor para habilitar.</p>'}
-<form method=post action=/admin/firms><input type=hidden name=csrf value={tok}>
-<label>De <input type=date name=inicio value="{start.isoformat()}"></label><label>até <input type=date name=fim value="{date.today().isoformat()}"></label>
-<label><input type=checkbox name=processar value=1 checked> Processar depois</label>
-<button class=primary {'disabled' if not key_ok else ''}>Baixar do FIRMS</button></form>
-</section>
-<section><h2>3. Processar e publicar</h2>
-<p class=muted>Junta todos os CSVs de <code>data/raw</code> (sem duplicar focos), recalcula províncias, departamentos, agregados e grades, e troca os dados do painel sem reiniciar.</p>
-<form method=post action=/admin/process><input type=hidden name=csrf value={tok}><button class=primary>Processar agora</button></form>
-<h3>Tarefa</h3><p id=jobstate class=muted>—</p><pre id=log></pre>
-</section>
-<section><h2>Dados no ar</h2>{status}</section>
-</main>
-<script>
-async function poll(){{try{{const r=await fetch('/admin/status');const j=await r.json();const s=j.state;
-document.getElementById('jobstate').textContent=s.running?('Em andamento: '+s.kind):(s.ok===null?'Nenhuma tarefa nesta sessão.':(s.ok?'Concluída: '+s.kind:'Falhou: '+(s.error||'')));
-document.getElementById('log').textContent=j.log.join('\\n');if(s.running)setTimeout(poll,2000);else if(window._wasRunning)location.reload();window._wasRunning=s.running;}}catch(e){{setTimeout(poll,5000)}}}}
-poll();
-</script>"""
-        return shell("Admin", body)
-
-    def render_login(tok: str, erro=None) -> str:
-        msg = "<p class=warn>Usuário ou senha incorretos.</p>" if erro else ""
-        return shell("Admin", f"""<main class=narrow><section><h2>Entrar no admin</h2>{msg}
-<form method=post action=/admin/login class=login><input type=hidden name=csrf value={tok}>
-<label>Usuário <input name=usuario autocomplete=username autofocus required></label>
-<label>Senha <input type=password name=senha autocomplete=current-password required></label>
-<button class=primary>Entrar</button></form></section></main>""")
-
-    def render_message(title: str, text: str) -> str:
-        return shell(title, f"<main class=narrow><section><h2>{html.escape(title)}</h2><p>{html.escape(text)}</p><p><a href='/'>Voltar ao painel</a></p></section></main>")
+        body = request.get_json(silent=True) or {}
+        if action in ("toggle", "delete"):
+            if jobs.state["running"]:
+                return busy()
+            name = Path(body.get("name", "")).name
+            if not ALLOWED_CSV.match(name):
+                abort(400)
+            on, off = raw / name, raw / (name + OFF)
+            cur = on if on.exists() else off if off.exists() else None
+            if cur is None:
+                abort(404)
+            if action == "delete":
+                cur.unlink()
+            else:
+                cur.rename(off if cur == on else on)
+            return jsonify(ok=True)
+        if action == "inspect":
+            return jsonify(ok=jobs.start("conferir", inspect)) if not jobs.state["running"] else busy()
+        if action == "process":
+            if not any(f["active"] and f["tipo"] == "brutos" for f in files()):
+                return jsonify(ok=False, msg="Nenhum arquivo focos_brutos ativo."), 400
+            return jsonify(ok=jobs.start("processar", process)) if not jobs.state["running"] else busy()
+        if action == "firms":
+            try:
+                start, end = date.fromisoformat(body["start"]), date.fromisoformat(body["end"])
+            except (KeyError, ValueError):
+                return jsonify(ok=False, msg="Datas inválidas."), 400
+            if end < start:
+                return jsonify(ok=False, msg="A data final é anterior à inicial."), 400
+            if not config.FIRMS_MAP_KEY:
+                return jsonify(ok=False, msg="Defina FIRMS_MAP_KEY no servidor."), 400
+            return jsonify(ok=jobs.start("firms", pull_firms(start, end, bool(body.get("process"))))) if not jobs.state["running"] else busy()
+        if action == "apply":
+            if jobs.state["running"] or not read_meta(nxt):
+                return jsonify(ok=False, msg="Não há versão nova para aplicar."), 400
+            shutil.rmtree(prev, ignore_errors=True)
+            if config.PROCESSED_DIR.exists():
+                config.PROCESSED_DIR.rename(prev)
+            nxt.rename(config.PROCESSED_DIR)
+            get_repo().reload()
+            return jsonify(ok=True)
+        if action == "discard":
+            shutil.rmtree(nxt, ignore_errors=True)
+            return jsonify(ok=True)
+        if action == "rollback":
+            if jobs.state["running"] or not read_meta(prev):
+                return jsonify(ok=False, msg="Não há versão anterior."), 400
+            tmp = config.DATA_DIR / "processed_swap"
+            shutil.rmtree(tmp, ignore_errors=True)
+            config.PROCESSED_DIR.rename(tmp)
+            prev.rename(config.PROCESSED_DIR)
+            tmp.rename(prev)
+            get_repo().reload()
+            return jsonify(ok=True)
+        if action == "publish":
+            ok, why = publish.availability()
+            if not ok:
+                return jsonify(ok=False, msg=why), 400
+            return jsonify(ok=jobs.start("publicar", do_publish)) if not jobs.state["running"] else busy()
+        abort(404)
 
     return bp
 
 
-def shell(title: str, body: str) -> str:
-    return f"""<!doctype html><html lang=pt-BR><head><meta charset=utf-8><meta name=robots content=noindex><meta name=viewport content="width=device-width,initial-scale=1">
-<title>{html.escape(title)} · Calendário de Focos</title><style>
-:root{{--bg:#eceff2;--surface:#fff;--fg:#1a1f25;--muted:#5b6570;--line:#d9dde2;--accent:#c2410c;--warn:#9a6700}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif}}
-header{{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--line)}}
-h1{{font-size:18px;margin:0}}h2{{font-size:16px;margin:0 0 6px}}h3{{font-size:13px;margin:14px 0 6px}}small,.muted{{color:var(--muted)}}
-nav{{display:flex;gap:14px;align-items:center}}nav a{{color:var(--fg)}}
-main{{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:12px;padding:12px 16px;max-width:1400px}}main.narrow{{max-width:460px;display:block}}
-section{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}}
-form{{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}}
-button.primary{{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 14px;font-weight:600;cursor:pointer}}button[disabled]{{opacity:.5;cursor:not-allowed}}
-button.link{{border:0;background:none;color:var(--accent);cursor:pointer;padding:0;text-decoration:underline}}
-table{{width:100%;border-collapse:collapse;font-size:13px}}td,th{{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}}.num{{text-align:right;font-family:monospace}}
-pre{{background:#111;color:#e8e8e8;border-radius:6px;padding:10px;max-height:320px;overflow:auto;font-size:12px;white-space:pre-wrap}}pre:empty{{display:none}}
-dl{{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0}}dt{{color:var(--muted)}}dd{{margin:0}}
-.flash{{margin:12px 16px 0;padding:8px 12px;background:#fff6db;border:1px solid #f1dc9a;border-radius:6px}}.warn{{color:var(--warn)}}
-code{{font-size:12px}}form.login{{flex-direction:column;align-items:stretch}}form.login label{{display:flex;flex-direction:column;gap:4px}}form.login input{{padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit}}</style></head><body>{body}</body></html>"""
+def login_html(tok: str, erro=None) -> str:
+    msg = "<p class=warn>Usuário ou senha incorretos.</p>" if erro else ""
+    return shell("Admin", f"""<main class=narrow><section><h2>Entrar no admin</h2>{msg}
+<form method=post action=/admin/login class=login><input type=hidden name=csrf value={html.escape(tok)}>
+<label>Usuário <input name=usuario autocomplete=username autofocus required></label>
+<label>Senha <input type=password name=senha autocomplete=current-password required></label>
+<button class=primary>Entrar</button></form></section></main>""")

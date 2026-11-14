@@ -18,3 +18,7 @@ data/upload.tmp
 
 # local secrets
 .env
+data/processed.tar
+data/processed_prev/
+data/processed_swap/
+data/publicacoes.json

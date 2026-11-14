@@ -1,0 +1,68 @@
+# Push to main -> run tests -> deploy the app to the Hugging Face Space.
+# AI-assisted: written with Claude (Anthropic) and reviewed by the team.
+# Needs the repository secret HF_TOKEN (Hugging Face token with write access to the Space)
+# and, optionally, the repository variable HF_SPACE (default below).
+name: Deploy to Hugging Face
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hf
+  cancel-in-progress: true
+
+env:
+  HF_SPACE: ${{ vars.HF_SPACE || 'luk14236/space-apps-teu-2026' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q -p no:dash   # tests that need data/processed are skipped in CI
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: huggingface
+      url: https://huggingface.co/spaces/${{ env.HF_SPACE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install "huggingface_hub>=0.30"
+      - name: Deploy
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then echo "::error::Configure o secret HF_TOKEN no repositório"; exit 1; fi
+          python scripts/deploy_hf.py --space "$HF_SPACE" --message "Deploy ${GITHUB_SHA::7}: $(git log -1 --pretty=%s)"
+      - name: Wait for the Space to be running
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, time
+          from huggingface_hub import HfApi
+          api, space = HfApi(), os.environ["HF_SPACE"]
+          time.sleep(20)
+          for _ in range(90):
+              stage = api.get_space_runtime(space).stage
+              print(stage, flush=True)
+              if stage == "RUNNING":
+                  break
+              if stage in ("BUILD_ERROR", "RUNTIME_ERROR", "CONFIG_ERROR"):
+                  raise SystemExit(f"Space falhou: {stage}")
+              time.sleep(10)
+          else:
+              raise SystemExit("Space não ficou RUNNING a tempo")
+          PY

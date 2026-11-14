@@ -31,3 +31,8 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 SECRET_KEY = os.environ.get("SECRET_KEY") or os.urandom(32).hex()  # set it in production so logins survive restarts
 FIRMS_MAP_KEY = os.environ.get("FIRMS_MAP_KEY", "")
+
+# Online publishing (admin step 4): Hugging Face Space that serves the app. SPACE_ID is set by Hugging Face itself.
+HF_SPACE = os.environ.get("HF_SPACE", "")
+SITE_URL = os.environ.get("SITE_URL", "")
+ON_SPACE = bool(os.environ.get("SPACE_ID"))

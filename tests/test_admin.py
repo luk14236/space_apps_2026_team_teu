@@ -42,10 +42,10 @@ def _tar(files: dict) -> bytes:
 def test_admin_requires_login(client):
     c, _ = client
     assert "Entrar no admin" in c.get("/admin").get_data(as_text=True)
-    assert c.get("/admin/status").status_code == 403
+    assert c.get("/admin/api/state").status_code == 403
     assert _login(c, pw="errada").headers["Location"].endswith("erro=1")
     assert _login(c).headers["Location"].endswith("/admin")
-    assert c.get("/admin/status").status_code == 200
+    assert c.get("/admin/api/state").status_code == 200
 
 
 def test_admin_disabled_without_credentials(client, monkeypatch):
@@ -76,3 +76,18 @@ def test_upload_rejects_unknown_files_and_bad_csrf(client):
     c.post("/admin/upload", data={"csrf": tok, "arquivos": (io.BytesIO(b"x"), "notas.txt")},
            content_type="multipart/form-data")
     assert not raw.exists() or not any(raw.iterdir())
+
+
+def test_toggle_keeps_file_out_of_processing(client):
+    c, raw = client
+    _login(c)
+    raw.mkdir(parents=True)
+    (raw / "focos_brutos_a.csv").write_text("pais\n")
+    tok = _csrf(c)
+    r = c.post("/admin/api/toggle", json={"name": "focos_brutos_a.csv"}, headers={"X-CSRF": tok})
+    assert r.status_code == 200 and (raw / "focos_brutos_a.csv.off").exists()
+    files = c.get("/admin/api/state").get_json()["files"]
+    assert files[0]["name"] == "focos_brutos_a.csv" and files[0]["active"] is False
+    assert c.post("/admin/api/process", json={}, headers={"X-CSRF": tok}).status_code == 400  # nothing active
+    c.post("/admin/api/toggle", json={"name": "focos_brutos_a.csv"}, headers={"X-CSRF": tok})
+    assert (raw / "focos_brutos_a.csv").exists()

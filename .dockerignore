@@ -1,0 +1,12 @@
+.venv
+.git
+.env
+data/raw
+data/processed
+data/processed_*
+data/cache
+*.tar
+*.tar.gz
+*.zip
+**/__pycache__
+tests
