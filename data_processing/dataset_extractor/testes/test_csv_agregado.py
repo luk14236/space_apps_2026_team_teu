@@ -14,6 +14,8 @@ def test_aggregate_matches_independent_source_grouping(sample_dataset):
         assert differences == (0, 0), f"Grupos divergentes esperado->CSV/CSV->esperado: {differences}"
         columns = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_csv('{sql_path(sample_dataset['aggregate'])}', header=true)").fetchall()]
         assert columns == AGGREGATE_COLUMNS
+        null_predictions = con.execute(f"SELECT count(*) FROM read_csv('{sql_path(sample_dataset['aggregate'])}', header=true, all_varchar=true) WHERE nfocos_harm IS NOT NULL OR modelo_harm IS NOT NULL").fetchone()[0]
+        assert null_predictions == 0
         raw_count = con.execute(f"SELECT count(*) FROM read_csv('{sql_path(sample_dataset['raw'])}', header=true)").fetchone()[0]
         aggregate_count, nfocos_sum = con.execute(f"SELECT count(*), sum(nfocos::BIGINT) FROM read_csv('{sql_path(sample_dataset['aggregate'])}', header=true, all_varchar=true)").fetchone()
         assert raw_count == nfocos_sum == sample_dataset["transformed"]["raw_rows"]

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 DATASET_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = DATASET_DIR.parents[1]
 if str(DATASET_DIR) not in sys.path:
     sys.path.insert(0, str(DATASET_DIR))
 
@@ -40,7 +41,7 @@ def sample_dataset(tmp_path: Path) -> dict:
             {**common, "satellite": "Aqua", "instrument": "MODIS"},
         ],
         "viirs-snpp_2024_Brazil.csv": [
-            {**common, "satellite": "N", "instrument": "VIIRS", "acq_time": "5", "acq_date": "2024-01-06", "latitude": "-15.7", "longitude": "-47.9"},
+            {**common, "satellite": "N", "instrument": "VIIRS", "confidence": "n", "acq_time": "5", "acq_date": "2024-01-06", "latitude": "-15.7", "longitude": "-47.9"},
         ],
         "viirs-jpss1_2024_French_Guiana.csv": [
             {**common, "satellite": "N20", "instrument": "VIIRS", "acq_time": "2359", "acq_date": "2024-03-31", "latitude": "4.9", "longitude": "-52.3"},
@@ -88,9 +89,9 @@ def production_dataset():
     import csv
 
     report_path = DATASET_DIR / "csv" / "download_report.csv"
-    raw_path = DATASET_DIR / "output" / "focos_brutos_america_sul.csv"
-    aggregate_path = DATASET_DIR / "output" / "focos_mensais_america_sul.csv"
-    database_path = DATASET_DIR / "output" / "focos_america_sul.duckdb"
+    raw_path = PROJECT_ROOT / "data" / "focos_brutos_america_sul.csv"
+    aggregate_path = PROJECT_ROOT / "data" / "focos_mensais_america_sul.csv"
+    database_path = PROJECT_ROOT / "data" / "focos_america_sul.duckdb"
     required = [report_path, raw_path, aggregate_path, database_path]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -131,7 +132,8 @@ def source_projection_sql(source_files: list[Path]) -> str:
                 strptime(acq_date || lpad(acq_time, 4, '0'), '%Y-%m-%d%H%M')::TIMESTAMP AS data_hora_gmt,
                 latitude::DOUBLE AS latitude, longitude::DOUBLE AS longitude,
                 CASE satellite WHEN 'N20' THEN 'NOAA20' WHEN 'N' THEN 'SNPP' WHEN 'Aqua' THEN 'AQUA' WHEN 'Terra' THEN 'TERRA' END::VARCHAR AS satelite,
-                instrument::VARCHAR AS sensor, frp::DOUBLE AS frp
+                instrument::VARCHAR AS sensor, frp::DOUBLE AS frp,
+                confidence::VARCHAR AS confidence, daynight::VARCHAR AS daynight, type::INTEGER AS type
                 FROM read_csv('{escaped}', header=true, all_varchar=true)""")
         return " UNION ALL ".join(branches)
     finally:

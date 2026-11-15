@@ -61,7 +61,7 @@ _TBD._
 
 ## AI usage
 
-As the Space Apps 2026 rules require, we disclose that AI tools (Claude) helped speed up implementation: code, documentation, and data processing. The solution idea and design decisions are the team's own. Files with substantial AI-assisted content will be marked in their headers.
+As the Space Apps 2026 rules require, we disclose that AI tools (Claude and ChatGPT) helped speed up implementation: code, documentation, and data processing. The solution idea and design decisions are the team's own. Files with substantial AI-assisted content will be marked in their headers.
 
 ## References
 
