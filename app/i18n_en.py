@@ -142,6 +142,10 @@ EN: dict[str, str] = {
     "focos individuais": "individual hotspots",
 
     # ---------------------------------------------------------------- figures
+    "Linha laranja: soma do <code>peso_harm</code> entregue pelo time de dados, na escala de um satélite VIIRS (S-NPP), exibida apenas antes do início das observações S-NPP.":
+        "Orange line: sum of the <code>peso_harm</code> values provided by the data team, scaled to a single VIIRS satellite (S-NPP), shown only before S-NPP observations begin.",
+    "Linha laranja provisória até chegar o <code>peso_harm</code>: antes do S-NPP, Aqua × razão S-NPP/Aqua do mesmo mês em {a}–{b} (Terra × razão S-NPP/Terra antes do Aqua existir). A linha termina quando começam as observações S-NPP.":
+        "Provisional orange line until <code>peso_harm</code> becomes available: before S-NPP, Aqua × the monthly S-NPP/Aqua ratio fitted over {a}–{b} (Terra × the S-NPP/Terra ratio before Aqua became available). The line ends when S-NPP observations begin.",
     "<b>{m} de {y}</b><br>{n} focos<br>{p}% vs. mediana do mês": "<b>{m} {y}</b><br>{n} hotspots<br>{p}% vs. month median",
     "<b>%{customdata[2]}</b> média de %{y:,.0f} focos/mês<br>clique para filtrar": "<b>%{customdata[2]}</b> average of %{y:,.0f} hotspots/month<br>click to filter",
     "<b>%{y}</b>: %{x:,.0f} focos no período<br>clique para filtrar": "<b>%{y}</b>: %{x:,.0f} hotspots in period<br>click to filter",
