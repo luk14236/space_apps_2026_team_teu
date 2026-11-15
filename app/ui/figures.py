@@ -215,11 +215,16 @@ def satellite_monthly(m: pd.DataFrame, has_harm: bool) -> tuple[go.Figure, str]:
                              hovertemplate=tr("AQUA observado: %{y:,.0f}") + "<extra></extra>"))
     if has_harm and m["harm"].notna().any():
         harm, lbl, note = m["harm"], tr("Harmonizado completo (escala SNPP)"), tr(
-            "Linha laranja: soma do <code>peso_harm</code> entregue pelo time de dados, na escala de um satélite VIIRS (S-NPP).")
+            "Linha laranja: soma do <code>peso_harm</code> entregue pelo time de dados, na escala de um satélite VIIRS (S-NPP), exibida apenas antes do início das observações S-NPP.")
     else:
         harm, lbl = provisional_harm(m), tr("Harmonizado (escala SNPP) · estimativa provisória")
         note = tr("Linha laranja provisória até chegar o <code>peso_harm</code>: antes do S-NPP, Aqua × razão S-NPP/Aqua do mesmo mês em {a}–{b} "
-                  "(Terra × razão S-NPP/Terra antes do Aqua existir); depois, o S-NPP observado.", a=CAL_YEARS[0], b=CAL_YEARS[1])
+                  "(Terra × razão S-NPP/Terra antes do Aqua existir). A linha termina quando começam as observações S-NPP.", a=CAL_YEARS[0], b=CAL_YEARS[1])
+    # The harmonized line ends at the first month with observed S-NPP.
+    # This changes only the chart, not the source data or monthly aggregates.
+    first_snpp = m.index[m["snpp"] > 0]
+    if harm is not None and len(first_snpp):
+        harm = harm.where(m.index < first_snpp[0])
     if harm is not None:
         fig.add_trace(go.Scatter(x=x, y=harm, mode="lines", line=dict(color="#ff8c00", width=2.2), name=lbl,
                                  hovertemplate=tr("harmonizado: %{y:,.0f}") + "<extra></extra>"))
