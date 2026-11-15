@@ -29,6 +29,38 @@ SENSORS = {"MODIS", "VIIRS"}
 RAW_COLUMNS = ["pais", "data_hora_gmt", "latitude", "longitude", "satelite", "sensor", "frp", "confidence", "daynight", "type", "peso_harm"]
 AGGREGATE_COLUMNS = ["ano", "mes", "pais", "satelite", "sensor", "nfocos", "nfocos_harm", "modelo_harm"]
 SOURCE_COLUMNS = {"acq_date", "acq_time", "latitude", "longitude", "satellite", "instrument", "frp", "confidence", "daynight", "type"}
+OBSERVATION_COLUMNS = RAW_COLUMNS[:-1]
+
+
+def _sql_path(path: Path) -> str:
+    return str(Path(path).resolve()).replace("'", "''")
+
+
+def _relation_differences(con, left_query: str, right_query: str) -> tuple[int, int]:
+    left_only = con.execute(f"SELECT count(*) FROM (({left_query}) EXCEPT ALL ({right_query}))").fetchone()[0]
+    right_only = con.execute(f"SELECT count(*) FROM (({right_query}) EXCEPT ALL ({left_query}))").fetchone()[0]
+    return left_only, right_only
+
+
+def _csv_observations_query(path: Path) -> str:
+    columns = ", ".join(OBSERVATION_COLUMNS)
+    return f"SELECT {columns} FROM read_csv('{_sql_path(path)}', header=true, all_varchar=true)"
+
+
+def _csv_monthly_query(path: Path) -> str:
+    return (
+        "SELECT ano::INTEGER AS ano, mes::INTEGER AS mes, pais, satelite, sensor, "
+        f"nfocos::BIGINT AS nfocos FROM read_csv('{_sql_path(path)}', header=true, all_varchar=true) "
+        "WHERE nfocos IS NOT NULL"
+    )
+
+
+def _raw_monthly_query(relation: str) -> str:
+    return (
+        "SELECT year(data_hora_gmt)::INTEGER AS ano, month(data_hora_gmt)::INTEGER AS mes, "
+        "pais, satelite, sensor, count(*)::BIGINT AS nfocos "
+        f"FROM {relation} GROUP BY ALL"
+    )
 
 
 def resolve_dataset_dir() -> Path:
@@ -99,6 +131,7 @@ def transform_sources(source_files: list[Path], raw_csv: Path, aggregate_csv: Pa
     aggregate_fd, aggregate_temp_name = tempfile.mkstemp(prefix=aggregate_csv.name, suffix=".part", dir=aggregate_csv.parent)
     os.close(aggregate_fd)
     raw_temp, aggregate_temp = Path(raw_temp_name), Path(aggregate_temp_name)
+    preserved_temp = None
     rows_written = 0
     group_counts: Counter = Counter()
     try:
@@ -116,10 +149,9 @@ def transform_sources(source_files: list[Path], raw_csv: Path, aggregate_csv: Pa
                         context = f"{source_path}, linha {line_number}"
                         normalized = normalize_row(row, country_token, context)
                         writer.writerow(normalized)
-                        if reprocess_aggregate:
-                            dt = datetime.strptime(normalized["data_hora_gmt"], "%Y-%m-%d %H:%M:%S")
-                            key = (dt.year, dt.month, normalized["pais"], normalized["satelite"], normalized["sensor"])
-                            group_counts[key] += 1
+                        dt = datetime.strptime(normalized["data_hora_gmt"], "%Y-%m-%d %H:%M:%S")
+                        key = (dt.year, dt.month, normalized["pais"], normalized["satelite"], normalized["sensor"])
+                        group_counts[key] += 1
                         rows_written += 1
         if reprocess_aggregate:
             with aggregate_temp.open("w", newline="", encoding="utf-8") as destination:
@@ -132,14 +164,61 @@ def transform_sources(source_files: list[Path], raw_csv: Path, aggregate_csv: Pa
         # Independently verify the aggregate using DuckDB's CSV reader.
         con = duckdb.connect()
         try:
-            raw_sql_path = str(raw_temp.resolve()).replace("'", "''")
-            aggregate_sql_path = str(aggregate_temp.resolve()).replace("'", "''")
+            raw_sql_path = _sql_path(raw_temp)
+            aggregate_sql_path = _sql_path(aggregate_temp)
             raw_count = con.execute(f"SELECT count(*) FROM read_csv_auto('{raw_sql_path}')").fetchone()[0]
-            aggregate_sum = rows_written
             if reprocess_aggregate:
                 aggregate_sum = con.execute(f"SELECT coalesce(sum(nfocos), 0) FROM read_csv_auto('{aggregate_sql_path}')").fetchone()[0]
-            if raw_count != rows_written or aggregate_sum != rows_written:
-                raise RuntimeError(f"Validação da agregação falhou: bruto={raw_count}, soma nfocos={aggregate_sum}, origem={rows_written}")
+                monthly_differences = _relation_differences(
+                    con, _raw_monthly_query(f"read_csv('{raw_sql_path}', header=true)"), _csv_monthly_query(aggregate_temp)
+                )
+            else:
+                if not aggregate_csv.is_file():
+                    raise FileNotFoundError(f"CSV agregado existente necessário para preservação: {aggregate_csv}")
+                if not raw_csv.is_file():
+                    raise FileNotFoundError(f"CSV bruto existente necessário para preservar peso_harm: {raw_csv}")
+                aggregate_sum = con.execute(f"SELECT coalesce(sum(nfocos), 0) FROM ({_csv_monthly_query(aggregate_csv)})").fetchone()[0]
+                monthly_differences = _relation_differences(
+                    con, _raw_monthly_query(f"read_csv('{raw_sql_path}', header=true)"), _csv_monthly_query(aggregate_csv)
+                )
+            if raw_count != rows_written or aggregate_sum != rows_written or monthly_differences != (0, 0):
+                raise RuntimeError(
+                    "Validação da agregação falhou: "
+                    f"bruto={raw_count}, soma nfocos={aggregate_sum}, origem={rows_written}, "
+                    f"grupos divergentes={monthly_differences}"
+                )
+
+            preserved_weights = 0
+            if not reprocess_aggregate:
+                observation_differences = _relation_differences(con, _csv_observations_query(raw_temp), _csv_observations_query(raw_csv))
+                if observation_differences != (0, 0):
+                    raise RuntimeError(
+                        "Não é seguro preservar peso_harm: as observações brutas existentes "
+                        f"não reconciliam exatamente ({observation_differences})"
+                    )
+                old_path = _sql_path(raw_csv)
+                partition = ", ".join(OBSERVATION_COLUMNS)
+                join = " AND ".join(f'new."{column}" IS NOT DISTINCT FROM old."{column}"' for column in OBSERVATION_COLUMNS)
+                selected = ", ".join(f'new."{column}"' for column in OBSERVATION_COLUMNS)
+                preserved_fd, preserved_name = tempfile.mkstemp(prefix=raw_csv.name, suffix=".weighted.part", dir=raw_csv.parent)
+                os.close(preserved_fd)
+                preserved_temp = Path(preserved_name)
+                preserved_temp.unlink()
+                con.execute(f"""COPY (
+                    WITH new_rows AS (
+                        SELECT *, row_number() OVER (PARTITION BY {partition}) AS occurrence
+                        FROM read_csv('{raw_sql_path}', header=true, all_varchar=true)
+                    ), old_rows AS (
+                        SELECT *, row_number() OVER (PARTITION BY {partition}) AS occurrence
+                        FROM read_csv('{old_path}', header=true, all_varchar=true)
+                    )
+                    SELECT {selected}, old.peso_harm
+                    FROM new_rows AS new JOIN old_rows AS old ON {join} AND new.occurrence = old.occurrence
+                ) TO '{_sql_path(preserved_temp)}' (HEADER, DELIMITER ',')""")
+                preserved_weights = con.execute(
+                    f"SELECT count(*) FROM read_csv('{_sql_path(preserved_temp)}', header=true, all_varchar=true) WHERE peso_harm IS NOT NULL"
+                ).fetchone()[0]
+                os.replace(preserved_temp, raw_temp)
         finally:
             con.close()
         os.replace(raw_temp, raw_csv)
@@ -147,10 +226,12 @@ def transform_sources(source_files: list[Path], raw_csv: Path, aggregate_csv: Pa
             os.replace(aggregate_temp, aggregate_csv)
         else:
             aggregate_temp.unlink(missing_ok=True)
-        return {"raw_rows": rows_written, "aggregate_groups": len(group_counts) if reprocess_aggregate else None, "nfocos_sum": rows_written}
+        return {"raw_rows": rows_written, "aggregate_groups": len(group_counts), "nfocos_sum": rows_written, "preserved_weights": preserved_weights}
     except Exception:
         raw_temp.unlink(missing_ok=True)
         aggregate_temp.unlink(missing_ok=True)
+        if preserved_temp is not None:
+            preserved_temp.unlink(missing_ok=True)
         raise
 
 
@@ -167,27 +248,22 @@ def build_duckdb(raw_csv: Path, aggregate_csv: Path, database_path: Path, reproc
     temp_database.unlink()
     if not reprocess_aggregate and not database_path.is_file():
         raise FileNotFoundError(f"Banco DuckDB existente necessário para preservar focos_mensais: {database_path}")
-    raw_path = str(Path(raw_csv).resolve()).replace("'", "''")
-    aggregate_path = str(Path(aggregate_csv).resolve()).replace("'", "''")
+    raw_path = _sql_path(raw_csv)
+    aggregate_path = _sql_path(aggregate_csv)
     con = duckdb.connect(str(temp_database))
     try:
         existing_tables = set()
         if database_path.is_file():
-            existing_database = str(Path(database_path).resolve()).replace("'", "''")
+            existing_database = _sql_path(database_path)
             con.execute(f"ATTACH '{existing_database}' AS existing_db (READ_ONLY)")
             existing_tables = {row[0] for row in con.execute("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'existing_db'").fetchall()}
             if not reprocess_aggregate:
-                old_columns = {row[0] for row in con.execute("DESCRIBE existing_db.focos_mensais").fetchall()}
-                harm_expr = 'round("nfocos_harm")::BIGINT AS nfocos_harm' if "nfocos_harm" in old_columns else "NULL::BIGINT AS nfocos_harm"
-                model_expr = '"modelo_harm"::VARCHAR AS modelo_harm' if "modelo_harm" in old_columns else "NULL::VARCHAR AS modelo_harm"
-                con.execute(f"""CREATE TABLE focos_mensais AS
-                    SELECT ano::INTEGER AS ano, mes::INTEGER AS mes, pais::VARCHAR AS pais,
-                           satelite::VARCHAR AS satelite, sensor::VARCHAR AS sensor,
-                           nfocos::BIGINT AS nfocos, {harm_expr}, {model_expr}
-                    FROM existing_db.focos_mensais""")
+                required_tables = {"focos_brutos", "focos_mensais"}
+                if not required_tables <= existing_tables:
+                    raise RuntimeError(f"Banco existente não contém as tabelas necessárias: {sorted(required_tables - existing_tables)}")
             if "modelos_equacoes" in existing_tables:
                 con.execute("CREATE TABLE modelos_equacoes AS SELECT * FROM existing_db.modelos_equacoes")
-        con.execute(f"""CREATE TABLE focos_brutos AS
+        con.execute(f"""CREATE TABLE incoming_focos_brutos AS
             SELECT pais::VARCHAR AS pais,
                    strptime(data_hora_gmt, '%Y-%m-%d %H:%M:%S')::TIMESTAMP AS data_hora_gmt,
                    latitude::DOUBLE AS latitude, longitude::DOUBLE AS longitude,
@@ -195,6 +271,50 @@ def build_duckdb(raw_csv: Path, aggregate_csv: Path, database_path: Path, reproc
                    confidence::VARCHAR AS confidence, daynight::VARCHAR AS daynight, type::INTEGER AS type,
                    peso_harm::DOUBLE AS peso_harm
             FROM read_csv('{raw_path}', header=true, all_varchar=true)""")
+        preserved_weights = 0
+        if reprocess_aggregate:
+            con.execute("ALTER TABLE incoming_focos_brutos RENAME TO focos_brutos")
+        else:
+            con.execute(f"""CREATE TABLE incoming_focos_mensais AS
+                SELECT ano::INTEGER AS ano, mes::INTEGER AS mes, pais::VARCHAR AS pais,
+                       satelite::VARCHAR AS satelite, sensor::VARCHAR AS sensor, nfocos::BIGINT AS nfocos,
+                       nfocos_harm::BIGINT AS nfocos_harm, modelo_harm::VARCHAR AS modelo_harm
+                FROM read_csv('{aggregate_path}', header=true, all_varchar=true)""")
+            observation_columns = ", ".join(OBSERVATION_COLUMNS)
+            observation_differences = _relation_differences(
+                con,
+                f"SELECT {observation_columns} FROM incoming_focos_brutos",
+                f"SELECT {observation_columns} FROM existing_db.focos_brutos",
+            )
+            monthly_differences = _relation_differences(
+                con,
+                _raw_monthly_query("incoming_focos_brutos"),
+                "SELECT ano, mes, pais, satelite, sensor, nfocos FROM incoming_focos_mensais WHERE nfocos IS NOT NULL",
+            )
+            if observation_differences != (0, 0):
+                raise RuntimeError(
+                    "Não é seguro preservar peso_harm: as observações brutas não reconciliam "
+                    f"exatamente ({observation_differences})"
+                )
+            if monthly_differences != (0, 0):
+                raise RuntimeError(
+                    "Não é seguro preservar a harmonização: os grupos mensais divergem "
+                    f"({monthly_differences})"
+                )
+            raw_differences = _relation_differences(
+                con, "SELECT * FROM incoming_focos_brutos", "SELECT * FROM existing_db.focos_brutos"
+            )
+            monthly_artifact_differences = _relation_differences(
+                con, "SELECT * FROM incoming_focos_mensais", "SELECT * FROM existing_db.focos_mensais"
+            )
+            if raw_differences != (0, 0) or monthly_artifact_differences != (0, 0):
+                raise RuntimeError(
+                    "CSV e DuckDB existentes divergem; preservação cancelada: "
+                    f"bruto={raw_differences}, mensal={monthly_artifact_differences}"
+                )
+            con.execute("ALTER TABLE incoming_focos_brutos RENAME TO focos_brutos")
+            con.execute("ALTER TABLE incoming_focos_mensais RENAME TO focos_mensais")
+            preserved_weights = con.execute("SELECT count(*) FROM focos_brutos WHERE peso_harm IS NOT NULL").fetchone()[0]
         if reprocess_aggregate:
             con.execute("DROP TABLE IF EXISTS focos_mensais")
             con.execute(f"""CREATE TABLE focos_mensais AS
@@ -205,7 +325,11 @@ def build_duckdb(raw_csv: Path, aggregate_csv: Path, database_path: Path, reproc
         raw_count = con.execute("SELECT count(*) FROM focos_brutos").fetchone()[0]
         monthly_count, monthly_sum = con.execute("SELECT count(*), coalesce(sum(nfocos), 0) FROM focos_mensais").fetchone()
         null_dates = con.execute("SELECT count(*) FROM focos_brutos WHERE data_hora_gmt IS NULL").fetchone()[0]
-        if null_dates or raw_count != monthly_sum:
+        monthly_differences = _relation_differences(
+            con, _raw_monthly_query("focos_brutos"),
+            "SELECT ano, mes, pais, satelite, sensor, nfocos FROM focos_mensais WHERE nfocos IS NOT NULL",
+        )
+        if null_dates or raw_count != monthly_sum or monthly_differences != (0, 0):
             raise RuntimeError(f"DuckDB inconsistente: bruto={raw_count}, soma nfocos={monthly_sum}, datas nulas={null_dates}")
         con.execute("CHECKPOINT")
     except Exception:
@@ -214,4 +338,4 @@ def build_duckdb(raw_csv: Path, aggregate_csv: Path, database_path: Path, reproc
         raise
     con.close()
     os.replace(temp_database, database_path)
-    return {"raw_rows": raw_count, "monthly_groups": monthly_count, "nfocos_sum": monthly_sum}
+    return {"raw_rows": raw_count, "monthly_groups": monthly_count, "nfocos_sum": monthly_sum, "preserved_weights": preserved_weights}

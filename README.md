@@ -32,14 +32,18 @@ An interactive web map, centered on Argentina, for exploring fire hotspot activi
 | Source | Use |
 |---|---|
 | [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) — MODIS C6.1 (`MODIS_SP`/`MODIS_NRT`) | Hotspots 2000 → today |
-| NASA FIRMS — VIIRS S-NPP / NOAA-20 / NOAA-21 | Hotspots 2012 → today |
+| NASA FIRMS — VIIRS S-NPP / NOAA-20 | Hotspots 2012 → today |
 | [FIRMS Area API](https://firms.modaps.eosdis.nasa.gov/api/area/) | Queries by bounding box and date (needs a free `MAP_KEY`) |
 
 Field descriptions: [FIRMS attribute fields (Earthdata)](https://earthdata.nasa.gov/data/tools/firms/active-fire-data-attributes-modis-viirs).
 
 ## Harmonization approach
 
-_TBD — to be defined by the team._
+The current pipeline builds an **SNPP-only harmonized series**. It fits country-specific MODIS-to-SNPP count models from paired monthly observations, using the globally selected **Quasi-Poisson + power** specification for both AQUA → SNPP and TERRA → SNPP. AQUA is the preferred MODIS predictor for each country/month; TERRA is the fallback whenever AQUA is unavailable, in any year.
+
+The model estimates an SNPP-scale monthly count (`nfocos_harm`) wherever a MODIS monthly count exists. Observed SNPP counts remain separate in `nfocos`; missing SNPP country/month rows are created as explicitly synthetic estimates. NOAA-20 observations are retained in the data but are not used to fit the regressions or construct the harmonized series.
+
+For spatial display, modeled pre-2012 totals are distributed over detections from the selected MODIS source. From 2012 onward, observed SNPP detections receive weight `1`; model-only months without observed SNPP have no spatial weight. See the [regression documentation](dataset_processing/regression/README.md) for formulas, metrics, limitations, and persistence details.
 
 ## Tech stack
 
@@ -47,13 +51,36 @@ _TBD._
 
 ## Getting started
 
-_TBD._
-
 ```bash
 # clone
 git clone <repo-url>
 cd space_apps_2026_team_teu
 ```
+
+### Data processing
+
+The data workflow is notebook-based and must run in this order:
+
+1. Download the annual FIRMS country CSVs with [`01_download_firms.ipynb`](dataset_processing/dataset_extractor/01_download_firms.ipynb).
+2. Normalize detections, create monthly counts, and build DuckDB with [`02_tratamento_firms.ipynb`](dataset_processing/dataset_extractor/02_tratamento_firms.ipynb).
+3. Fit the MODIS → SNPP regressions and publish harmonized fields with [`regressoes_modis_viirs_por_pais.ipynb`](dataset_processing/regression/regressoes_modis_viirs_por_pais.ipynb).
+
+Install the processing dependencies and launch the notebooks from the repository root:
+
+```bash
+python -m pip install -r dataset_processing/dataset_extractor/requirements.txt
+python -m pip install -r dataset_processing/regression/requirements.txt
+jupyter lab dataset_processing/dataset_extractor/01_download_firms.ipynb
+```
+
+After the download completes, open the treatment notebook and then the regression notebook:
+
+```bash
+jupyter lab dataset_processing/dataset_extractor/02_tratamento_firms.ipynb
+jupyter lab dataset_processing/regression/regressoes_modis_viirs_por_pais.ipynb
+```
+
+The generated datasets are written under `data/`. Read the [dataset extraction runbook](dataset_processing/dataset_extractor/README.md) before rebuilding them, especially its preservation and regression-rerun notes.
 
 ## Team
 

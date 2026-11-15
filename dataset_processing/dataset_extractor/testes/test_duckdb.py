@@ -1,4 +1,7 @@
+import csv
+
 import duckdb
+import pytest
 
 from conftest import relation_differences, sql_path
 from firms_pipeline import build_duckdb
@@ -17,8 +20,8 @@ def test_database_tables_schemas_counts_and_csv_equality(sample_dataset):
         assert [r[1] for r in monthly_types] == ["INTEGER", "INTEGER", "VARCHAR", "VARCHAR", "VARCHAR", "BIGINT", "BIGINT", "VARCHAR"]
         raw_path = sql_path(sample_dataset["raw"])
         aggregate_path = sql_path(sample_dataset["aggregate"])
-        raw_csv_query = f"SELECT pais, strptime(data_hora_gmt, '%Y-%m-%d %H:%M:%S')::TIMESTAMP, latitude::DOUBLE, longitude::DOUBLE, satelite, sensor, frp::DOUBLE, confidence, daynight, type::INTEGER FROM read_csv('{raw_path}', header=true, all_varchar=true)"
-        raw_table_query = "SELECT pais, data_hora_gmt, latitude, longitude, satelite, sensor, frp, confidence, daynight, type FROM focos_brutos"
+        raw_csv_query = f"SELECT pais, strptime(data_hora_gmt, '%Y-%m-%d %H:%M:%S')::TIMESTAMP, latitude::DOUBLE, longitude::DOUBLE, satelite, sensor, frp::DOUBLE, confidence, daynight, type::INTEGER, peso_harm::DOUBLE FROM read_csv('{raw_path}', header=true, all_varchar=true)"
+        raw_table_query = "SELECT pais, data_hora_gmt, latitude, longitude, satelite, sensor, frp, confidence, daynight, type, peso_harm FROM focos_brutos"
         assert relation_differences(con, raw_csv_query, raw_table_query) == (0, 0)
         aggregate_csv_query = f"SELECT ano::INTEGER, mes::INTEGER, pais, satelite, sensor, nfocos::BIGINT, nfocos_harm::BIGINT, modelo_harm FROM read_csv('{aggregate_path}', header=true, all_varchar=true)"
         aggregate_table_query = "SELECT ano, mes, pais, satelite, sensor, nfocos, nfocos_harm, modelo_harm FROM focos_mensais"
@@ -49,9 +52,37 @@ def test_production_database_reconciles_with_both_csvs(production_dataset):
 
 
 def test_rebuild_without_monthly_reprocessing_preserves_harmonization_and_models(sample_dataset):
+    with sample_dataset["raw"].open(newline="", encoding="utf-8") as handle:
+        raw_rows = list(csv.DictReader(handle))
+    for row in raw_rows:
+        if row["satelite"] == "SNPP":
+            row["peso_harm"] = "1.5"
+    with sample_dataset["raw"].open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=raw_rows[0])
+        writer.writeheader()
+        writer.writerows(raw_rows)
+
+    with sample_dataset["aggregate"].open(newline="", encoding="utf-8") as handle:
+        monthly_rows = list(csv.DictReader(handle))
+    for row in monthly_rows:
+        if row["satelite"] == "AQUA":
+            row["nfocos_harm"] = "12"
+            row["modelo_harm"] = "AQUA->SNPP | quasi_poisson | potencial"
+    monthly_rows.append({
+        "ano": "2010", "mes": "1", "pais": "Argentina", "satelite": "SNPP",
+        "sensor": "VIIRS", "nfocos": "", "nfocos_harm": "12",
+        "modelo_harm": "AQUA->SNPP | quasi_poisson | potencial",
+    })
+    with sample_dataset["aggregate"].open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=monthly_rows[0])
+        writer.writeheader()
+        writer.writerows(monthly_rows)
+
     con = duckdb.connect(str(sample_dataset["database"]))
     try:
+        con.execute("UPDATE focos_brutos SET peso_harm=1.5 WHERE satelite='SNPP'")
         con.execute("UPDATE focos_mensais SET nfocos_harm=12, modelo_harm='AQUA->SNPP | quasi_poisson | potencial' WHERE satelite='AQUA'")
+        con.execute("INSERT INTO focos_mensais VALUES (2010, 1, 'Argentina', 'SNPP', 'VIIRS', NULL, 12, 'AQUA->SNPP | quasi_poisson | potencial')")
         con.execute("CREATE TABLE modelos_equacoes (pais VARCHAR, satelite_origem VARCHAR, satelite_destino VARCHAR)")
         con.execute("INSERT INTO modelos_equacoes VALUES ('Argentina', 'AQUA', 'SNPP')")
     finally:
@@ -64,6 +95,22 @@ def test_rebuild_without_monthly_reprocessing_preserves_harmonization_and_models
         tables = {row[0] for row in con.execute("SHOW TABLES").fetchall()}
         assert tables == {"focos_brutos", "focos_mensais", "modelos_equacoes"}
         assert con.execute("SELECT nfocos_harm, modelo_harm FROM focos_mensais WHERE satelite='AQUA'").fetchone() == (12, "AQUA->SNPP | quasi_poisson | potencial")
+        assert con.execute("SELECT nfocos, nfocos_harm FROM focos_mensais WHERE ano=2010 AND satelite='SNPP'").fetchone() == (None, 12)
+        assert con.execute("SELECT peso_harm FROM focos_brutos WHERE satelite='SNPP'").fetchone() == (1.5,)
         assert con.execute("SELECT * FROM modelos_equacoes").fetchall() == [("Argentina", "AQUA", "SNPP")]
     finally:
         con.close()
+
+
+def test_rebuild_rejects_divergent_csv_and_duckdb_weights(sample_dataset):
+    con = duckdb.connect(str(sample_dataset["database"]))
+    try:
+        con.execute("UPDATE focos_brutos SET peso_harm=2 WHERE satelite='SNPP'")
+    finally:
+        con.close()
+
+    with pytest.raises(RuntimeError, match="CSV e DuckDB existentes divergem"):
+        build_duckdb(
+            sample_dataset["raw"], sample_dataset["aggregate"], sample_dataset["database"],
+            reprocess_aggregate=False,
+        )

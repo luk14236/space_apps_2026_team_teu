@@ -547,7 +547,7 @@ def save_selected_models(
     monthly_csv_path: str | Path | None = None,
     raw_csv_path: str | Path | None = None,
 ) -> int:
-    """Replace models, monthly predictions and raw-point weights as one publication."""
+    """Publish models, predictions and weights with rollback on handled failures."""
     if not records:
         raise ValueError("Nenhum modelo escolhido para persistir; tabela não será alterada.")
     path = Path(database_path).expanduser().resolve()
@@ -572,18 +572,23 @@ def save_selected_models(
     raw_path = Path(raw_csv_path).expanduser().resolve() if raw_csv_path is not None else path.parent / "focos_brutos_america_sul.csv"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_fd, temp_name = tempfile.mkstemp(prefix=csv_path.name + ".", suffix=".part", dir=csv_path.parent)
-    os.close(temp_fd)
-    temp_csv = Path(temp_name)
-    raw_fd, raw_temp_name = tempfile.mkstemp(prefix=raw_path.name + ".", suffix=".part", dir=raw_path.parent)
-    os.close(raw_fd)
-    raw_temp_csv = Path(raw_temp_name)
-    file_publications = [(temp_csv, csv_path), (raw_temp_csv, raw_path)]
+    temp_csv: Path | None = None
+    raw_temp_csv: Path | None = None
+    file_publications: list[tuple[Path, Path]] = []
     backups: dict[Path, Path] = {}
     published: set[Path] = set()
     database_committed = False
-    con = duckdb.connect(str(path))
+    commit_attempted = False
+    con = None
     try:
+        temp_fd, temp_name = tempfile.mkstemp(prefix=csv_path.name + ".", suffix=".part", dir=csv_path.parent)
+        os.close(temp_fd)
+        temp_csv = Path(temp_name)
+        raw_fd, raw_temp_name = tempfile.mkstemp(prefix=raw_path.name + ".", suffix=".part", dir=raw_path.parent)
+        os.close(raw_fd)
+        raw_temp_csv = Path(raw_temp_name)
+        file_publications = [(temp_csv, csv_path), (raw_temp_csv, raw_path)]
+        con = duckdb.connect(str(path))
         monthly = con.execute("SELECT ano, mes, pais, satelite, sensor, nfocos FROM focos_mensais").fetchdf()
         raw_expected = con.execute("SELECT count(*) FROM focos_brutos").fetchone()[0]
         harmonized = build_harmonized_monthly(monthly, records)
@@ -654,37 +659,52 @@ def save_selected_models(
                 os.close(backup_fd)
                 backup = Path(backup_name)
                 backup.unlink()
-                os.replace(final_file, backup)
                 backups[final_file] = backup
-            os.replace(temp_file, final_file)
+                os.replace(final_file, backup)
             published.add(final_file)
+            os.replace(temp_file, final_file)
+        commit_attempted = True
         con.execute("COMMIT")
         database_committed = True
-        for backup in backups.values():
+    except BaseException:
+        rolled_back = False
+        no_active_transaction = False
+        if con is not None:
             try:
-                backup.unlink(missing_ok=True)
-            except OSError:
-                pass
-    except Exception:
-        try:
-            con.execute("ROLLBACK")
-        except Exception:
-            pass
-        if not database_committed:
+                con.execute("ROLLBACK")
+                rolled_back = True
+            except Exception as rollback_error:
+                no_active_transaction = "no transaction is active" in str(rollback_error).lower()
+        should_restore_files = not database_committed and not (commit_attempted and no_active_transaction)
+        if should_restore_files:
             for _, final_file in reversed(file_publications):
                 backup = backups.get(final_file)
                 if backup is not None and backup.exists():
                     os.replace(backup, final_file)
                 elif final_file in published:
                     final_file.unlink(missing_ok=True)
+        elif commit_attempted and no_active_transaction:
+            # COMMIT completed if a subsequent ROLLBACK reports no active transaction.
+            database_committed = True
         raise
     finally:
-        con.close()
-        temp_csv.unlink(missing_ok=True)
-        raw_temp_csv.unlink(missing_ok=True)
+        if con is not None:
+            try:
+                con.close()
+            except BaseException:
+                pass
+        for temporary in (temp_csv, raw_temp_csv):
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except BaseException:
+                    pass
         if database_committed:
             for backup in backups.values():
-                backup.unlink(missing_ok=True)
+                try:
+                    backup.unlink(missing_ok=True)
+                except BaseException:
+                    pass
     return len(records)
 
 
@@ -733,7 +753,7 @@ def plot_diagnostic(data: pd.DataFrame, fit: Fit, country: str, origin: str, des
 
 def comparison_ranking(results: list[dict]) -> pd.DataFrame:
     table = pd.DataFrame(results)
-    valid = table[(table.status == "ok") & table.mae.notna()].copy()
-    if valid.empty:
+    if table.empty:
         return table
+    valid = table[(table.status == "ok") & table.mae.notna()].copy()
     return valid.sort_values(["mae", "rmse"], kind="mergesort").reset_index(drop=True)

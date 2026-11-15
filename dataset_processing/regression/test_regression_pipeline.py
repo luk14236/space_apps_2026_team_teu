@@ -1,5 +1,7 @@
 import duckdb
 import pandas as pd
+import pytest
+from pathlib import Path
 
 from regression_pipeline import (
     build_harmonized_monthly,
@@ -31,6 +33,25 @@ def test_comparison_ranking_uses_mae_before_rmse():
     ]
 
     assert comparison_ranking(results).familia.tolist() == ["second", "first"]
+
+
+def test_comparison_ranking_returns_empty_when_all_models_fail():
+    failed = [{"status": "failed", "familia": "broken", "mae": None, "rmse": None}]
+
+    assert comparison_ranking(failed).empty
+    assert comparison_ranking([]).empty
+
+
+def test_harmonized_predictions_round_half_up():
+    monthly = pd.DataFrame(
+        [(2011, 1, "Argentina", "AQUA", "MODIS", 1)],
+        columns=["ano", "mes", "pais", "satelite", "sensor", "nfocos"],
+    )
+    models = [_model("Argentina", origin, "SNPP", 1.25) for origin in ("AQUA", "TERRA")]
+
+    result = build_harmonized_monthly(monthly, models)
+
+    assert result.loc[result.satelite == "SNPP", "nfocos_harm"].iloc[0] == 3
 
 
 def test_harmonization_prefers_aqua_falls_back_to_terra_and_preserves_observations():
@@ -158,3 +179,45 @@ def test_save_selected_models_publishes_matching_csv_and_duckdb(tmp_path):
         assert con.execute("SELECT count(*), count(*) FILTER (WHERE nfocos IS NULL), sum(nfocos) FROM focos_mensais").fetchone() == (6, 1, 7)
         assert con.execute(f"SELECT count(*) FROM ((SELECT * FROM focos_mensais) EXCEPT ALL (SELECT * FROM read_csv('{csv_path}', header=true)))").fetchone()[0] == 0
         assert con.execute(f"SELECT count(*), sum(peso_harm) FROM read_csv('{raw_csv_path}', header=true)").fetchone() == (7, 8.0)
+
+
+def test_save_selected_models_restores_files_on_keyboard_interrupt(tmp_path, monkeypatch):
+    database = tmp_path / "harmonized.duckdb"
+    monthly_csv = tmp_path / "monthly.csv"
+    raw_csv = tmp_path / "raw.csv"
+    monthly_csv.write_text("old monthly\n", encoding="utf-8")
+    raw_csv.write_text("old raw\n", encoding="utf-8")
+    with duckdb.connect(str(database)) as con:
+        con.execute("CREATE TABLE focos_brutos (pais VARCHAR, data_hora_gmt TIMESTAMP, satelite VARCHAR)")
+        con.execute("INSERT INTO focos_brutos VALUES ('Argentina', '2011-01-01', 'AQUA')")
+        con.execute("""CREATE TABLE focos_mensais AS SELECT * FROM (VALUES
+            (2011, 1, 'Argentina', 'AQUA', 'MODIS', 1::BIGINT)
+        ) AS t(ano,mes,pais,satelite,sensor,nfocos)""")
+
+    models = [_model("Argentina", origin, "SNPP", 1) for origin in ("AQUA", "TERRA")]
+    real_replace = __import__("os").replace
+    interrupted = False
+
+    def interrupt_raw_publication(source, destination):
+        nonlocal interrupted
+        if not interrupted and Path(destination) == raw_csv and str(source).endswith(".part"):
+            interrupted = True
+            real_replace(source, destination)
+            raise KeyboardInterrupt
+        return real_replace(source, destination)
+
+    monkeypatch.setattr("regression_pipeline.os.replace", interrupt_raw_publication)
+
+    with pytest.raises(KeyboardInterrupt):
+        save_selected_models(
+            database, models, ["Argentina"], [("AQUA", "SNPP"), ("TERRA", "SNPP")],
+            monthly_csv, raw_csv,
+        )
+
+    assert monthly_csv.read_text(encoding="utf-8") == "old monthly\n"
+    assert raw_csv.read_text(encoding="utf-8") == "old raw\n"
+    with duckdb.connect(str(database), read_only=True) as con:
+        assert con.execute("SELECT count(*) FROM focos_mensais").fetchone()[0] == 1
+        assert "modelos_equacoes" not in {row[0] for row in con.execute("SHOW TABLES").fetchall()}
+    assert not list(tmp_path.glob("*.part"))
+    assert not list(tmp_path.glob("*.backup"))
