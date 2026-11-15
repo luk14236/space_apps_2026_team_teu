@@ -96,23 +96,115 @@ app/
 scripts/               CLI versions of the admin steps, deploy to Hugging Face
 tests/
 ```
-
 ## Getting started
+
+Clone the repository, create a virtual environment, and install the application dependencies:
 
 ```bash
 git clone https://github.com/luk14236/space_apps_2026_team_teu.git
 cd space_apps_2026_team_teu
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-cp .env.example .env          # set ADMIN_USER, ADMIN_PASSWORD, FIRMS_MAP_KEY
 
-python -m app.main            # http://127.0.0.1:8050  (admin: /admin)
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements-dev.txt
+
+cp .env.example .env  # Configure ADMIN_USER, ADMIN_PASSWORD, and FIRMS_MAP_KEY
+```
+
+Start the application:
+
+```bash
+python -m app.main  # http://127.0.0.1:8050 (admin: /admin)
+```
+
+Run the tests:
+
+```bash
 pytest -q
 ```
 
-To load data, drop the data team's package (`.tar.gz` with `focos_brutos*.csv` / `focos_mensais*.csv`) into `data/entrada/` and click **Import** in the admin, then **Apply**. Command-line alternatives: `scripts/prepare_data.py`, `scripts/fetch_firms.py`, `scripts/publish_data.py`.
+### Data processing
 
-`data/geo/` is versioned; deliveries and processed data are not.
+The data processing pipeline consists of three Jupyter notebooks that must be executed in the following order:
+
+1. **Data extraction:** Download annual NASA FIRMS CSV files for each country using [`01_download_firms.ipynb`](dataset_processing/dataset_extractor/01_download_firms.ipynb).
+2. **Data preprocessing:** Normalize hotspot detections, generate monthly counts, and build the DuckDB database using [`02_tratamento_firms.ipynb`](dataset_processing/dataset_extractor/02_tratamento_firms.ipynb).
+3. **Regression and harmonization:** Fit MODIS-to-SNPP regression models and generate harmonized data fields using [`regressoes_modis_viirs_por_pais.ipynb`](dataset_processing/regression/regressoes_modis_viirs_por_pais.ipynb).
+
+Install the required dependencies from the repository root:
+
+```bash
+python -m pip install -r dataset_processing/dataset_extractor/requirements.txt
+python -m pip install -r dataset_processing/regression/requirements.txt
+```
+
+**Step 1 — Data extraction**
+
+Open the extraction notebook:
+
+```bash
+jupyter lab dataset_processing/dataset_extractor/01_download_firms.ipynb
+```
+
+Run all cells and ensure the extraction process completes successfully before proceeding.
+
+**Step 2 — Data preprocessing**
+
+Open the preprocessing notebook:
+
+```bash
+jupyter lab dataset_processing/dataset_extractor/02_tratamento_firms.ipynb
+```
+
+Run all cells to process the downloaded detections and generate the required datasets.
+
+**Step 3 — Regression and harmonization**
+
+Open the regression notebook:
+
+```bash
+jupyter lab dataset_processing/regression/regressoes_modis_viirs_por_pais.ipynb
+```
+
+Run all cells to fit the regression models and generate the harmonized outputs.
+
+The generated datasets are saved in the `data/` directory.
+
+Before rebuilding the datasets, consult the [dataset extraction runbook](dataset_processing/dataset_extractor/README.md), particularly the instructions regarding data preservation and regression reruns.
+
+#### Importing processed data
+
+To import a dataset provided by the data team:
+
+1. Place the `.tar.gz` package containing `focos_brutos*.csv` and `focos_mensais*.csv` in `data/entrada/`.
+2. Open the administration interface.
+3. Click **Import** to process the package.
+4. Click **Apply** to activate the new dataset.
+
+Alternatively, the following command-line scripts are available:
+
+- `scripts/prepare_data.py`
+- `scripts/fetch_firms.py`
+- `scripts/publish_data.py`
+
+The `data/geo/` directory is version-controlled, while incoming deliveries and processed datasets are excluded from version control.
+
+### Data contract
+
+The input datasets must contain the following columns:
+
+`pais`, `data_hora_gmt`, `latitude`, `longitude`, `satelite`, `sensor`, `frp`
+
+Optional columns include:
+
+- `peso_harm`: Harmonization weight assigned to each hotspot, used to generate the *Harmonized* series.
+- `confidence`
+- `daynight`
+- `type`
+
+Missing columns and data quality issues are recorded in `data/processed/meta.json` and displayed in the application header.
+
 
 ### Data contract
 
