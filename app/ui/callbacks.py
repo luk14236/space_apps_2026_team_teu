@@ -199,6 +199,7 @@ def register(app, repo: Repository) -> None:
         Output("rank-title", "children"), Output("rank", "children"),
         Output("timeline", "figure"), Output("tl-range", "children"), Output("tl-total", "children"),
         Output("tick", "disabled"), Output("play", "children"), Output("main", "className"), Output("viewlbl", "children"),
+        Output("harm-m", "figure"), Output("harm-m-note", "children"), Output("harm-chk", "figure"), Output("harm-chk-note", "children"),
         Input("st", "data"))
     def render_panel(st):
         f = filtro(st)
@@ -257,6 +258,8 @@ def register(app, repo: Repository) -> None:
         cumfig, call = F.cumulative(s, fy, repo.y0 + 1, repo.y1)
         anomfig = F.monthly_anomaly(s, fy, repo.y0 + 1, repo.y1)
 
+        hm_fig, hm_note = F.satellite_monthly(m, repo.has_harm)
+        chk_fig, chk_note = F.model_check(m)
         rank_title, rows = ranking(st)
         tl = F.timeline(s, st["t0"], st["t1"], ok)
         tl_total = sum(v for kk, v in s.items() if st["t0"] <= kk <= st["t1"] and ok(kk))
@@ -265,7 +268,8 @@ def register(app, repo: Repository) -> None:
                 cumfig, dcc.Markdown(call, dangerously_allow_html=True), tr("{fy} contra o histórico", fy=fy), anomfig,
                 rank_title, rows, tl, f"{mlabel(st['t0'])} – {mlabel(st['t1'])}", tr("{n} focos", n=fmt(tl_total)),
                 not st["playing"], tr("❚❚ Pausar") if st["playing"] else tr("▶ Reproduzir"),
-                "main " + st["mode"], tr("Expandir mapa") if st["mode"] == "dash" else tr("Voltar ao painel"))
+                "main " + st["mode"], tr("Expandir mapa") if st["mode"] == "dash" else tr("Voltar ao painel"),
+                hm_fig, dcc.Markdown(hm_note, dangerously_allow_html=True), chk_fig, dcc.Markdown(chk_note, dangerously_allow_html=True))
 
     def ranking(st):
         f = filtro(st)

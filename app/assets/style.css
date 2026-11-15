@@ -38,11 +38,11 @@ button{font:inherit;color:inherit}
 /* grade principal */
 .main{display:grid;gap:12px;padding:12px 16px 24px;align-items:start}
 .main.dash{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr);
-  grid-template-areas:"map scope cal" "map kpis cal" "map harm cal" "rank cum cal" "rank cum exp" "foot foot foot"}
+  grid-template-areas:"map scope cal" "map kpis cal" "map harm cal" "rank cum cal" "rank cum exp" "hm hm hm" "chk chk chk" "foot foot foot"}
 .main.map{grid-template-columns:minmax(0,1fr) 470px;
-  grid-template-areas:"map scope" "map kpis" "map cal" "map cum" "map harm" "map rank" "map exp" "map foot"}
+  grid-template-areas:"map scope" "map kpis" "map cal" "map cum" "map harm" "map hm" "map chk" "map rank" "map exp" "map foot"}
 #mapcard{grid-area:map}#sec-scope{grid-area:scope}#sec-kpis{grid-area:kpis}#sec-cal{grid-area:cal}#sec-harm{grid-area:harm}
-#sec-cum{grid-area:cum}#sec-rank{grid-area:rank}#sec-exp{grid-area:exp}#sec-foot{grid-area:foot}
+#sec-hm{grid-area:hm}#sec-chk{grid-area:chk}#sec-cum{grid-area:cum}#sec-rank{grid-area:rank}#sec-exp{grid-area:exp}#sec-foot{grid-area:foot}
 .sec,.mapcard,.foot{background:var(--surface);border:1px solid var(--line);border-radius:10px;min-width:0}
 .sec{padding:14px 16px;display:flex;flex-direction:column;gap:8px}
 .mapcard{display:flex;flex-direction:column;overflow:hidden}
@@ -100,8 +100,8 @@ button{font:inherit;color:inherit}
 .rank .den{font-family:var(--f-mono);font-size:11px;color:var(--muted);text-align:right}
 .foot{padding:12px 16px;display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
 
-@media (max-width:1300px){.main.dash{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"map map" "scope cal" "kpis cal" "harm cal" "cum rank" "exp rank" "foot foot"}}
-@media (max-width:900px){.main.dash,.main.map{grid-template-columns:minmax(0,1fr);grid-template-areas:"map" "scope" "kpis" "cal" "cum" "harm" "rank" "exp" "foot"}
+@media (max-width:1300px){.main.dash{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"map map" "scope cal" "kpis cal" "harm cal" "cum rank" "exp rank" "hm hm" "chk chk" "foot foot"}}
+@media (max-width:900px){.main.dash,.main.map{grid-template-columns:minmax(0,1fr);grid-template-areas:"map" "scope" "kpis" "cal" "cum" "harm" "hm" "chk" "rank" "exp" "foot"}
   .main.map .mapcard{position:static;height:auto}.search{width:100%}.controls{margin-left:0;width:100%}}
 
 /* navegação */

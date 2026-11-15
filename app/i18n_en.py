@@ -382,4 +382,32 @@ EN: dict[str, str] = {
     "Painel atualizado.": "Dashboard updated.", "Versão anterior restaurada.": "Previous version restored.",
     "Nota sobre esta entrega (quem enviou, o que mudou…):": "Note about this delivery (who sent it, what changed…):",
     "extraindo…": "extracting…", "entrega criada": "delivery created", "falhou ({s})": "failed ({s})",
+    # ---------------------------------------------------------------- monthly series by satellite + validation
+    "AQUA observado": "AQUA observed",
+    "AQUA observado: %{y:,.0f}": "AQUA observed: %{y:,.0f}",
+    "Aqua e S-NPP observados e a série harmonizada que junta os dois: antes de 2012 o Aqua é levado à escala do S-NPP; depois, vale o S-NPP observado. Segue a área e os satélites selecionados.":
+        "Aqua and S-NPP as observed and the harmonized series that joins them: before 2012 Aqua is brought to the S-NPP scale; after that, observed S-NPP is used. Follows the selected area and satellites.",
+    "Aqua → S-NPP: estimado × observado": "Aqua → S-NPP: estimated × observed",
+    "Harmonizado (escala SNPP) · estimativa provisória": "Harmonized (SNPP scale) · provisional estimate",
+    "Harmonizado completo (escala SNPP)": "Full harmonized (SNPP scale)",
+    "Início do período SNPP observado": "Start of the observed SNPP period",
+    "Linha laranja provisória até chegar o <code>peso_harm</code>: antes do S-NPP, Aqua × razão S-NPP/Aqua do mesmo mês em {a}–{b} (Terra × razão S-NPP/Terra antes do Aqua existir); depois, o S-NPP observado.":
+        "Provisional orange line until <code>peso_harm</code> arrives: before S-NPP, Aqua × the S-NPP/Aqua ratio of the same month in {a}–{b} (Terra × the S-NPP/Terra ratio before Aqua existed); after that, observed S-NPP.",
+    "Linha laranja: soma do <code>peso_harm</code> entregue pelo time de dados, na escala de um satélite VIIRS (S-NPP).":
+        "Orange line: sum of the <code>peso_harm</code> delivered by the data team, in the scale of one VIIRS satellite (S-NPP).",
+    "Nos anos em que os dois satélites existem, o modelo estima o S-NPP só a partir do Aqua; quanto mais as linhas coincidem, mais confiável é a série harmonizada antes de 2012.":
+        "In the years when both satellites exist, the model estimates S-NPP from Aqua alone; the closer the lines, the more reliable the harmonized series before 2012.",
+    "SNPP estimado pelo modelo": "SNPP estimated by the model",
+    "SNPP observado": "SNPP observed",
+    "SNPP observado: %{y:,.0f}": "SNPP observed: %{y:,.0f}",
+    "Sem meses suficientes com S-NPP e Aqua ao mesmo tempo nesta área.": "Not enough months with both S-NPP and Aqua in this area.",
+    "Série mensal por satélite, na escala do S-NPP": "Monthly series by satellite, in S-NPP scale",
+    "Validação": "Validation",
+    "estimado: %{y:,.0f}": "estimated: %{y:,.0f}",
+    "focos por mês": "hotspots per month",
+    "harmonizado: %{y:,.0f}": "harmonized: %{y:,.0f}",
+    "observado: %{y:,.0f}": "observed: %{y:,.0f}",
+    "{a}–{b}: correlação mensal <b>{r}</b> entre estimado e observado. Nos anos fora do ajuste ({c}–{b}), o total estimado difere <b>{e}%</b> do observado. Razões ajustadas em {f}–{g}.":
+        "{a}–{b}: monthly correlation of <b>{r}</b> between estimated and observed. In the years outside the fit ({c}–{b}), the estimated total differs by <b>{e}%</b> from observed. Ratios fitted on {f}–{g}.",
+
 }

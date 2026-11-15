@@ -23,6 +23,7 @@ import shapely
 from .geo import Geo
 
 SERIES = ("harm", "modis", "raw")
+SATS = ("TERRA", "AQUA", "SNPP", "NOAA20", "NOAA21")  # one monthly column each
 
 
 @dataclass(frozen=True)
@@ -161,23 +162,27 @@ class Repository:
     # ---------------------------------------------------------------- monthly series
     @lru_cache(maxsize=256)
     def monthly(self, f: Filtro) -> pd.DataFrame:
-        """Full monthly history for the scope (time filters ignored). Columns: raw, modis, viirs, harm."""
+        """Full monthly history for the scope (time filters ignored). Columns: raw, modis, viirs, harm + one per satellite."""
         f = f.without_time()
         sat, sp = self._sat_sql(f)
         if f.kind == "shape":
             view, where, prm = self._points_scope(f)
-            df = self.q(f"SELECT lon, lat, mi, sensor, peso_harm FROM {view} WHERE {where} AND {sat}", prm + sp)
+            df = self.q(f"SELECT lon, lat, mi, sensor, satelite, peso_harm FROM {view} WHERE {where} AND {sat}", prm + sp)
             df = self._shape_mask(df, f)
             g = df.groupby("mi")
             out = pd.DataFrame({"raw": g.size(), "modis": g["sensor"].apply(lambda s: (s == "MODIS").sum()),
                                 "harm": g["peso_harm"].sum(min_count=1)})
+            for s_ in SATS:
+                out[s_.lower()] = g["satelite"].apply(lambda s, s_=s_: (s == s_).sum())
         else:
             tab, where, prm = self._scope_agg(f)
-            out = self.q(f"""SELECT mi, SUM(n) raw, SUM(n) FILTER (WHERE sensor='MODIS') modis, SUM(n_harm) harm
+            per_sat = ", ".join(f"SUM(n) FILTER (WHERE satelite='{s_}') {s_.lower()}" for s_ in SATS)
+            out = self.q(f"""SELECT mi, SUM(n) raw, SUM(n) FILTER (WHERE sensor='MODIS') modis, SUM(n_harm) harm, {per_sat}
                              FROM {tab} WHERE {where} AND {sat} GROUP BY mi""", prm + sp).set_index("mi")
         idx = pd.RangeIndex(self.mi0, self.mi1 + 1, name="mi")
         out = out.reindex(idx).astype("float64")
-        out[["raw", "modis"]] = out[["raw", "modis"]].fillna(0)
+        cols = ["raw", "modis"] + [s_.lower() for s_ in SATS]
+        out[cols] = out[cols].fillna(0)
         out["viirs"] = out["raw"] - out["modis"]
         out["ano"] = out.index // 12
         out["mes"] = out.index % 12 + 1

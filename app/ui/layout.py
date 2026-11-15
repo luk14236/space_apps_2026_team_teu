@@ -135,6 +135,14 @@ def build_layout(repo: Repository) -> html.Div:
             card("sec-exp", html.Span(tr("Exportar"), className="eyebrow"), html.H3(tr("Focos da seleção")),
                  html.Button(tr("Baixar CSV"), id="csv", className="btn primary", n_clicks=0),
                  html.P(tr("Até 200 mil focos mais recentes da área e período selecionados."), className="note")),
+            card("sec-hm", html.Span(tr("Harmonização"), className="eyebrow"), html.H3(tr("Série mensal por satélite, na escala do S-NPP")),
+                 html.P(tr("Aqua e S-NPP observados e a série harmonizada que junta os dois: antes de 2012 o Aqua é levado à escala do S-NPP; "
+                           "depois, vale o S-NPP observado. Segue a área e os satélites selecionados."), className="sub"),
+                 dcc.Graph(id="harm-m", config=graph_cfg), html.Div(id="harm-m-note", className="note")),
+            card("sec-chk", html.Span(tr("Validação"), className="eyebrow"), html.H3(tr("Aqua → S-NPP: estimado × observado")),
+                 html.P(tr("Nos anos em que os dois satélites existem, o modelo estima o S-NPP só a partir do Aqua; quanto mais as linhas "
+                           "coincidem, mais confiável é a série harmonizada antes de 2012."), className="sub"),
+                 dcc.Graph(id="harm-chk", config=graph_cfg), html.Div(id="harm-chk-note", className="note")),
             html.Footer(id="sec-foot", className="foot", children=[
                 html.Strong(tr("Fontes")),
                 html.Span([tr("Focos: NASA FIRMS (MODIS C6.1, VIIRS 375 m), entregues pelo time de dados. "

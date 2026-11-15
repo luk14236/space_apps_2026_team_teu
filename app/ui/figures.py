@@ -174,6 +174,101 @@ def harmonization(m: pd.DataFrame, has_harm: bool, viirs_year: int = 2012) -> tu
     return fig, note
 
 
+# ------------------------------------------------------------------ monthly series by satellite (SNPP scale)
+CAL_YEARS = (2013, 2019)  # overlap used for the provisional estimate (before the Terra/Aqua orbit drift)
+
+
+def ratios(m: pd.DataFrame, base: str) -> dict:
+    """S-NPP / `base` ratio per calendar month over CAL_YEARS ("glob" = all months together)."""
+    ov = m[(m["ano"] >= CAL_YEARS[0]) & (m["ano"] <= CAL_YEARS[1])]
+    tot_b = ov[base].sum()
+    glob = ov["snpp"].sum() / tot_b if tot_b else np.nan
+    out = {mes: (g["snpp"].sum() / g[base].sum() if g[base].sum() >= 30 else glob) for mes, g in ov.groupby("mes")}
+    return {k: (v if np.isfinite(v) else glob) for k, v in out.items()} | {"glob": glob}
+
+
+def provisional_harm(m: pd.DataFrame) -> pd.Series | None:
+    """Estimate in S-NPP scale while `peso_harm` is missing: S-NPP where it exists (NOAA-20 after it ends); before it,
+    Aqua (same ~13:30 overpass) times the S-NPP/Aqua ratio of the same calendar month in CAL_YEARS, and Terra alone
+    (before Aqua existed) times the S-NPP/Terra ratio. Ratios fall back to the all-months value when counts are small."""
+    snpp, aqua, terra, noaa20 = (m[c] for c in ("snpp", "aqua", "terra", "noaa20"))
+    if snpp.sum() == 0:
+        return None
+    ka, kt = ratios(m, "aqua"), ratios(m, "terra")
+    first = snpp[snpp > 0].index.min()
+    est = pd.Series(np.nan, index=m.index)
+    for mi in m.index:
+        mes = mi % 12 + 1
+        if mi >= first:
+            est[mi] = snpp[mi] if snpp[mi] > 0 or noaa20[mi] == 0 else noaa20[mi]
+        elif aqua[mi] > 0:
+            est[mi] = aqua[mi] * ka.get(mes, ka["glob"])
+        elif terra[mi] > 0:
+            est[mi] = terra[mi] * kt.get(mes, kt["glob"])
+    return est
+
+
+def satellite_monthly(m: pd.DataFrame, has_harm: bool) -> tuple[go.Figure, str]:
+    x = pd.to_datetime({"year": m.index // 12, "month": m.index % 12 + 1, "day": 1})
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=m["aqua"].where(m["aqua"].cumsum() > 0), mode="lines", line=dict(color="#11897d", width=1), opacity=0.75, name=tr("AQUA observado"),
+                             hovertemplate=tr("AQUA observado: %{y:,.0f}") + "<extra></extra>"))
+    if has_harm and m["harm"].notna().any():
+        harm, lbl, note = m["harm"], tr("Harmonizado completo (escala SNPP)"), tr(
+            "Linha laranja: soma do <code>peso_harm</code> entregue pelo time de dados, na escala de um satélite VIIRS (S-NPP).")
+    else:
+        harm, lbl = provisional_harm(m), tr("Harmonizado (escala SNPP) · estimativa provisória")
+        note = tr("Linha laranja provisória até chegar o <code>peso_harm</code>: antes do S-NPP, Aqua × razão S-NPP/Aqua do mesmo mês em {a}–{b} "
+                  "(Terra × razão S-NPP/Terra antes do Aqua existir); depois, o S-NPP observado.", a=CAL_YEARS[0], b=CAL_YEARS[1])
+    if harm is not None:
+        fig.add_trace(go.Scatter(x=x, y=harm, mode="lines", line=dict(color="#ff8c00", width=2.2), name=lbl,
+                                 hovertemplate=tr("harmonizado: %{y:,.0f}") + "<extra></extra>"))
+    sn = m["snpp"].where(m["snpp"] > 0)
+    fig.add_trace(go.Scatter(x=x, y=sn, mode="lines+markers", line=dict(color="#3c6ef0", width=1.4), marker=dict(size=4), name=tr("SNPP observado"),
+                             hovertemplate=tr("SNPP observado: %{y:,.0f}") + "<extra></extra>"))
+    base_layout(fig, 340, showlegend=True, hovermode="x unified",
+                legend=dict(orientation="h", y=1.12, x=0, font=dict(size=11, color=FG), bgcolor="rgba(0,0,0,0)"))
+    fig.update_layout(margin=dict(l=50, r=10, t=30, b=30))
+    first = m.index[m["snpp"] > 0]
+    if len(first):
+        x0 = pd.Timestamp(year=int(first[0] // 12), month=int(first[0] % 12 + 1), day=1)
+        fig.add_vline(x=x0, line=dict(color=MUTED, dash="dash", width=1.2))
+        fig.add_annotation(x=x0, y=1, yref="paper", text=tr("Início do período SNPP observado"), showarrow=False, xanchor="left",
+                           font=dict(color=MUTED, size=10))
+    fig.update_yaxes(title=dict(text=tr("focos por mês"), font=dict(size=10)))
+    return fig, note
+
+
+def model_check(m: pd.DataFrame) -> tuple[go.Figure, str]:
+    """Validation: S-NPP estimated from Aqua (same ratios as the provisional series) against S-NPP observed, 2012 onwards."""
+    sel = m[(m["snpp"] > 0) & (m["aqua"] > 0)]
+    sel = sel[sel["ano"] < sel["ano"].max()] if len(sel) and (sel["ano"] == sel["ano"].max()).sum() < 12 else sel  # full years only
+    fig = go.Figure()
+    if len(sel) < 12:
+        base_layout(fig, 300)
+        return fig, tr("Sem meses suficientes com S-NPP e Aqua ao mesmo tempo nesta área.")
+    ka = ratios(m, "aqua")
+    est = pd.Series([a * ka.get(mi % 12 + 1, ka["glob"]) for mi, a in sel["aqua"].items()], index=sel.index)
+    obs = sel["snpp"]
+    x = pd.to_datetime({"year": sel.index // 12, "month": sel.index % 12 + 1, "day": 1})
+    fig.add_trace(go.Scatter(x=x, y=est, mode="lines+markers", line=dict(color="#ff8c00", width=2), marker=dict(size=4),
+                             name=tr("SNPP estimado pelo modelo"), hovertemplate=tr("estimado: %{y:,.0f}") + "<extra></extra>"))
+    fig.add_trace(go.Scatter(x=x, y=obs, mode="lines+markers", line=dict(color="#3c6ef0", width=1.4), marker=dict(size=4),
+                             name=tr("SNPP observado"), hovertemplate=tr("observado: %{y:,.0f}") + "<extra></extra>"))
+    base_layout(fig, 320, showlegend=True, hovermode="x unified",
+                legend=dict(orientation="h", y=1.12, x=0, font=dict(size=11, color=FG), bgcolor="rgba(0,0,0,0)"))
+    fig.update_layout(margin=dict(l=50, r=10, t=30, b=30))
+    fig.update_yaxes(title=dict(text=tr("focos por mês"), font=dict(size=10)))
+    out = sel["ano"] > CAL_YEARS[1]  # years not used to fit the ratios
+    r = float(np.corrcoef(est, obs)[0, 1]) if obs.std() and est.std() else float("nan")
+    tot_err = (est[out].sum() - obs[out].sum()) / obs[out].sum() * 100 if out.any() and obs[out].sum() else float("nan")
+    y0, y1 = int(sel["ano"].min()), int(sel["ano"].max())
+    note = tr("{a}–{b}: correlação mensal <b>{r}</b> entre estimado e observado. Nos anos fora do ajuste ({c}–{b}), o total estimado difere "
+              "<b>{e}%</b> do observado. Razões ajustadas em {f}–{g}.", a=y0, b=y1, r=num(r, 2), c=CAL_YEARS[1] + 1,
+              e=f"{'+' if tot_err >= 0 else ''}{num(tot_err, 1)}", f=CAL_YEARS[0], g=CAL_YEARS[1])
+    return fig, note
+
+
 # ------------------------------------------------------------------ timeline (brush)
 def timeline(values: pd.Series, t0: int, t1: int, cal_ok) -> go.Figure:
     x = values.index.to_numpy()

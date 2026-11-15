@@ -81,7 +81,8 @@ BODIES = {
     "temp": lambda: [html.Div(id="sala-temp-call", className="callout"), dcc.Graph(id="sala-temp", config=graph_cfg)],
     "clock": lambda: [html.Div(id="sala-clock-call", className="callout"), dcc.Graph(id="sala-clock", config=graph_cfg)],
     "cal": lambda: [dcc.Graph(id="sala-cal", config=graph_cfg)],
-    "harm": lambda: [dcc.Graph(id="sala-harm", config=graph_cfg), html.Div(id="sala-harm-note", className="note")],
+    "harm": lambda: [dcc.Graph(id="sala-harm", config=graph_cfg), html.Div(id="sala-harm-note", className="note"),
+                     dcc.Graph(id="sala-harm-m", config=graph_cfg)],
     "sat": lambda: [html.Div(id="sala-sat")],
 }
 
@@ -293,6 +294,7 @@ def register_sala(app, repo: Repository) -> None:
         Output("sala-strip", "figure"), Output("sala-hlegend", "children"), Output("sala-quad", "figure"), Output("sala-hoje", "children"),
         Output("sala-temp", "figure"), Output("sala-temp-call", "children"), Output("sala-clock", "figure"), Output("sala-clock-call", "children"),
         Output("sala-cal", "figure"), Output("sala-harm", "figure"), Output("sala-harm-note", "children"), Output("sala-sat", "children"),
+        Output("sala-harm-m", "figure"),
         Input("sala-st", "data"), State("sala-tool", "value"))
     def render(st, tool):
         s = Sala(repo)
@@ -369,7 +371,7 @@ def register_sala(app, repo: Repository) -> None:
         sat = sat_table(s.sat_status(), D)
         return (acount, tr("Crítico: ≥3× o esperado e ≥{n} focos em {w}", n=RMIN[win], w=wl), alerts, crumbs, name, stat, kpis,
                 mapfig, maplegend, tri_el, strip, hleg, quad, hoje, temp, call, clock, clock_call, cal, harm,
-                dcc.Markdown(harm_note, dangerously_allow_html=True), sat)
+                dcc.Markdown(harm_note, dangerously_allow_html=True), sat, F.satellite_monthly(m, repo.has_harm)[0])
 
     def scope_filter(st) -> Filtro:
         serie = "harm" if repo.has_harm else "raw"

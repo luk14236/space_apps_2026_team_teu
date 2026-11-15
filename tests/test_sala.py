@@ -26,7 +26,7 @@ def test_render_sala(app, kind, uid, win):
     if uid is None:
         uid = Geo(config.GEO_DIR).deps_of["AR-X"][0]
     out = _render(app)({"win": win, "kind": kind, "uid": uid, "shape": [], "hl": None, "sort": ["score", -1]}, "pan")
-    assert len(out) == 22
+    assert len(out) == 23
     to_json_plotly(list(out))  # what Dash does before sending: fails on non-serializable values
     assert out[4]  # title
 
