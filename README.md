@@ -2,7 +2,7 @@
 
 > NASA Space Apps Challenge 2026 · Challenge #9 — **MODIS and VIIRS Hot Spots** (proposed by CONAE, Argentina)
 
-A Python web app, centered on Argentina, for exploring fire hotspot activity from **2000 to today** across South America, with the full drill-down (provinces/states → departments/municipalities) for **Argentina, Brazil and the Netherlands**. MODIS and VIIRS detections are joined into one series in the scale of a single VIIRS satellite, so the sensor change in 2012 stops looking like a rise in fire activity.
+A Python web app, centered on Argentina, for exploring fire hotspot records **from 2000 through the latest loaded observations** across South America, with administrative drill-down (provinces/states → departments/municipalities) for **Argentina, Brazil and the Netherlands**. The project estimates historical counts on the Suomi NPP VIIRS scale to improve comparability across the MODIS–VIIRS transition.
 
 **Live site:** https://luk14236-space-apps-teu-2026.hf.space · interface in **Portuguese and English** (PT | EN switch at the top of every page).
 
@@ -12,7 +12,9 @@ A Python web app, centered on Argentina, for exploring fire hotspot activity fro
 
 - **VIIRS** (S-NPP, NOAA-20, NOAA-21, 375 m pixel, since 2012) is the continuity sensor. It sees smaller fires and splits one fire into several pixels.
 
-- If you join the two series without treatment, a false **step** shows up in 2012 when VIIRS comes in (in Argentina the raw total jumps ~229% from 2011 to 2012). It looks like a rise in fire activity, but it is only the sensor change.
+- Combining raw counts across sensors can introduce an artificial **step** when VIIRS observations begin in 2012. An increase in combined detections cannot, by itself, establish an increase in fire activity or quantify how much of the change is due to the sensor.
+
+Hotspot detections are not counts of individual fires or measurements of burned area.
 
 ## What the app does
 
@@ -28,7 +30,7 @@ A Python web app, centered on Argentina, for exploring fire hotspot activity fro
 
 - **Monthly series by satellite, in S-NPP scale**: Aqua observed, S-NPP observed and the harmonized series shown before the first S-NPP observation.
 
-- **Validation (Aqua → S-NPP, estimated × observed)**: in the years both satellites exist, S-NPP estimated from Aqua alone against S-NPP observed, with monthly correlation and out-of-sample error.
+- **Ratio-based diagnostic (Aqua → S-NPP, estimated × observed)**: estimates from calendar-month ratios against observed S-NPP counts, with monthly correlation and post-calibration total error. This is separate from the regression pipeline evaluation below.
 
 - **Season anomaly** (EFFIS style): cumulative year against min–max / p25–p75 / median and monthly anomaly bars.
 
@@ -42,44 +44,62 @@ alerts by department, priority queue, anomaly map (departments on alert drawn ov
 
 ### Admin (`/admin`, hidden, login required)
 
-Four-step flow to **receive deliveries** (inbox folder, browser upload, link, NASA FIRMS API), **check** them, **process and apply** a new version (with a side-by-side comparison and rollback) and **publish** it to the live site. Every delivery and every applied version is kept in a history. Full manual: see the handover documents below.
+Four-step flow to **receive deliveries** (inbox folder, browser upload, link, NASA FIRMS API), **check** them, **process and apply** a new version (with a side-by-side comparison and rollback) and **publish** it to the live site. Deliveries and applied versions are recorded in a history. See the import and deployment instructions below.
 
 **Target users:** fire brigades, Civil Defense, scientists and land managers.
 
 ## Harmonization approach
 
-Target scale: **one VIIRS satellite (S-NPP)**. Summing S-NPP and NOAA-20 would double the counts after 2018 and create new steps, so they are not added up.
+Target scale: **one VIIRS satellite (S-NPP)**. Combining counts from multiple VIIRS satellites can introduce additional discontinuities; the historical regression workflow therefore targets S-NPP rather than their sum.
 
-| Satellite | Period | Weight (`peso_harm`) |
-|---|---|---|
-| S-NPP | 2012 → 31 Oct 2026 | 1 |
-| NOAA-20 | only where S-NPP is missing (from 1 Nov 2026) | 1, otherwise 0 |
-| NOAA-21 | — | 0 |
-| Aqua | before 2012 | k_aqua (S-NPP / Aqua ratio, same ~13:30 overpass) |
-| Terra | only before Aqua existed (Nov 2000 – Jun 2002) | k_terra, otherwise 0 |
-| MODIS | 2012 onwards | 0 |
+### Country-specific regression
 
-- The data team fits the Aqua → S-NPP and Terra → S-NPP conversion with a **quasi-Poisson model** per country and delivers the result as `peso_harm` on every hotspot (2000–2025). The app sums it for the **Harmonized** series; their totals match the team's monthly file.
+The data pipeline compares six configurations for Argentina / Aqua → S-NPP: Quasi-Poisson and Negative Binomial families, each with proportional, exponential and power mean functions. **Quasi-Poisson + power** has the lowest in-sample MAE. That structure is fitted separately for each country and source satellite; Argentina's coefficients are not copied to other countries.
 
-- Hotspots that arrived later without a weight (FIRMS days of 2026) get the model-free part of the same rule: S-NPP = 1, NOAA-20 = 1 only after S-NPP ended (1 Nov 2026), every other satellite = 0.
+Aqua is the preferred source because its overpass time is comparable to S-NPP's. Terra is used when Aqua is unavailable for a country/month. The method operates on monthly country totals, not matched fire pixels.
 
-- The in-app validation chart uses a simple S-NPP/Aqua ratio per calendar month fitted on **2013–2019** (before the Terra/Aqua orbit drift).
+| Output | Meaning |
+|---|---|
+| `nfocos` | Observed monthly detection count; null for synthetic S-NPP rows |
+| `nfocos_harm` | MODIS-model prediction on the S-NPP scale, including overlap months |
+| `peso_harm` | Per-detection weight used for the spatial harmonized series |
 
-- **Validation** for Argentina, 2012–2025: monthly correlation **0.98** between estimated and observed S-NPP; in the years outside the fit (2020–2025) the estimated total differs by about **−2%** from observed.
+Before 2012, weights distribute the predicted monthly count across detections from the selected Aqua/Terra source. From 2012 onward, the historical pipeline assigns observed S-NPP detections weight 1 and other detections weight 0. Consequently, the sum of spatial weights reproduces predictions before 2012 and observed S-NPP counts afterward; it does **not** always equal `nfocos_harm`. NOAA-20 is retained as observed data but excluded from this historical regression and weighting workflow.
+
+### Application updates and provisional estimates
+
+For incoming rows without weights, [`app/pipeline/prepare.py`](app/pipeline/prepare.py) fills S-NPP weights with 1 and NOAA-20 weights with 1 for timestamps on or after **2026-11-01**. Other rows from 2012 onward receive 0; earlier MODIS rows remain without a weight because no regression has been supplied. This date-based NOAA-20 fallback does not check for simultaneous S-NPP observations, so overlapping deliveries require review before treating their combined weights as a single-satellite series.
+
+When delivered harmonization is unavailable, the monthly chart has a provisional ratio-based estimate. The separate in-app diagnostic also uses **S-NPP/Aqua ratios by calendar month calibrated on 2013–2019**, not the Quasi-Poisson model. It reports correlation across eligible overlap months and aggregate percentage error for eligible years after 2019. Results depend on the selected area and loaded observations; they are not validation metrics for the regression pipeline.
+
+### Results and limitations
+
+The [regression report](dataset_processing/regression/README.md) records these Argentina / Aqua → S-NPP results:
+
+| Measure | Result |
+|---|---|
+| Fit and evaluation period | January 2012–December 2025, 168 paired months |
+| MAE | 3,287.39 hotspots/month |
+| RMSE | 4,970.02 hotspots/month |
+| Largest absolute monthly error | 19,260.15 hotspots, January 2022 |
+
+These are **in-sample** results: the same observations were used for fitting and evaluation. They do not establish future predictive accuracy. Independent temporal validation, vegetation-aware models and regional calibration are planned improvements.
+
+Country-level relationships can hide local differences in vegetation, fire characteristics and satellite observation conditions. Spatially distributed weights are not independently validated local reconstructions. The Situation Room supports investigation and planning; its projections are not a validated fire forecast.
 
 ## Data
 
 | Source | Use |
 |---|---|
-| [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) — MODIS C6.1 | Hotspots 2000 → today |
-| NASA FIRMS — VIIRS S-NPP / NOAA-20 / NOAA-21 (375 m) | Hotspots 2012 → today |
+| [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) — MODIS C6.1 | Historical and recent Terra/Aqua detections, subject to loaded coverage |
+| NASA FIRMS — VIIRS S-NPP / NOAA-20 / NOAA-21 (375 m) | Observed VIIRS records; S-NPP is the historical regression target |
 | [FIRMS Area API](https://firms.modaps.eosdis.nasa.gov/api/area/) | Recent days (science product, near real time as fallback; needs a free `MAP_KEY`) |
 | [FIRMS country archive](https://firms.modaps.eosdis.nasa.gov/country/) | Netherlands history 2000–2025 (yearly per-country files) |
 | [geoBoundaries](https://www.geoboundaries.org/) and [Natural Earth](https://github.com/topojson/world-atlas) | Provinces/states and departments/municipalities of Argentina, Brazil and the Netherlands; country boundaries |
 
 Field descriptions: [FIRMS attribute fields (Earthdata)](https://earthdata.nasa.gov/data/tools/firms/active-fire-data-attributes-modis-viirs).
 
-Current version: 77,375,757 hotspots covering 13 South American countries and the Netherlands, Nov 2000 → Nov 2026.
+The application recognizes 13 South American countries/territories and the Netherlands. Actual coverage, record counts and latest dates depend on the installed delivery. Check `data/processed/meta.json` and the application header for the active dataset rather than assuming a fixed total or real-time completeness.
 
 ## Tech stack
 
@@ -87,7 +107,7 @@ Current version: 77,375,757 hotspots covering 13 South American countries and th
 
 - **Dash 3 + Plotly 6**: app, linked charts, MapLibre map (`Choroplethmap` / `Scattermap`)
 
-- **DuckDB + Parquet**: fast queries over ~77 million hotspots, with monthly, daily and grid pre-aggregates; no database server
+- **DuckDB + Parquet**: analytical queries with monthly, daily and grid pre-aggregates; no database server
 
 - **Shapely 2**: assigns each hotspot of Argentina, Brazil and the Netherlands to its province/state and department/municipality (in parallel, per country)
 
@@ -167,7 +187,7 @@ python -m pip install -r dataset_processing/dataset_extractor/requirements.txt
 python -m pip install -r dataset_processing/regression/requirements.txt
 ```
 
-Open each notebook in JupyterLab and **run all cells to completion** before moving to the next one:
+Open each notebook in JupyterLab and **run all cells to completion** before moving to the next one. Install JupyterLab separately if it is not available (`python -m pip install jupyterlab`). For a fresh rebuild, set `DRY_RUN = False` in the download notebook and `REPROCESSAR_AGREGADO = True` in the treatment notebook; read the extraction runbook before changing these options for an existing dataset.
 
 ```bash
 # 1. Extract FIRMS data
@@ -245,11 +265,10 @@ Missing columns and data-quality issues are recorded in `data/processed/meta.jso
 | Bruno Denardo | [@brunodenardo](https://github.com/brunodenardo) |
 | Abner Rodrigo | [@abnercosta97](https://github.com/abnercosta97) |
 | Cícero | cicerocasj@gmail.com |
-| Fabiano Morelli | Fabianomorelli@hotmai.com |
 
 ## AI usage
 
-As the Space Apps 2026 rules require, we disclose that AI tools (Claude, by Anthropic) helped speed up implementation: code, documentation, translations and data processing. The solution idea, the harmonization method and the design decisions are the team's own. Files with substantial AI-assisted content are marked in their headers.
+As the Space Apps 2026 rules require, we disclose that Claude (Anthropic) assisted with code, documentation, translations and data-processing implementation. An OpenAI assistant also helped review submission requirements, prepare presentation text and layout, capture the live application with Selenium, and revise this README. The solution idea, harmonization method and design decisions are the team's own, as declared by the team. AI-assisted implementation files include disclosure headers; this section records assistance with the submission materials and this document. Live application screenshots and statistical charts are distinct from generative imagery.
 
 ## References
 
@@ -261,12 +280,16 @@ As the Space Apps 2026 rules require, we disclose that AI tools (Claude, by Anth
 
 - [Earthdata Forum — end of S-NPP delivery](https://forum.earthdata.nasa.gov/viewtopic.php?p=26446)
 
-- Ren et al., 2026 — [Correction-before-fusion MODIS/VIIRS FRP](https://www.mdpi.com/2072-4292/18/10/1650), **Remote Sensing**
+- [Fire Radiative Power Correction and Spatiotemporal Fusion Based on MYD14 and VNP14IMG](https://doi.org/10.3390/rs18101650), **Remote Sensing**, 2026, 18(10), 1650. See the regression documentation for its methodological role.
 
 - [MODIS vs VIIRS in forests and low-biomass areas](https://mdpi.com/2072-4292/12/18/2870), **Remote Sensing**, 2020
 
 - UX references: [Global Fire Calendar (Greenpeace)](https://maps.greenpeace.org/projects/firecal/), [EFFIS / GWIS](https://forest-fire.emergency.copernicus.eu/applications), [Global Forest Watch](https://www.globalforestwatch.org/map/), [kepler.gl](https://kepler.gl/), [Perceptual Edge — dashboards for situation awareness](https://www.perceptualedge.com/blog/?p=45), [Horizon charts](https://en.wikipedia.org/wiki/Horizon_chart)
 
+- Map attribution: [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and [CARTO](https://carto.com/attributions), alongside the boundary sources listed above.
+
+- Software dependencies: [application requirements](requirements.txt), [extraction requirements](dataset_processing/dataset_extractor/requirements.txt), and [regression requirements](dataset_processing/regression/requirements.txt). Third-party software and data retain their respective licenses and attribution requirements.
+
 ## License
 
-*_TBD._*
+The project license has not yet been selected. Public repository access does not itself grant an open-source license. Third-party data, code and visual resources remain subject to their own terms.
