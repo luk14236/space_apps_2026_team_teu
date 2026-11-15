@@ -1,6 +1,29 @@
-**.pytest*
-**__pycache__*
-**.duckdb
-**.csv
-**.tar.gz
-**.venv
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Data (large files stay out of git; see README "Data")
+data/raw/
+data/processed/
+data/cache/
+*.tar.gz
+*.duckdb
+*.duckdb.wal
+pedido-dados.zip
+data/processed_next/
+data/processed_old/
+data/upload.tmp
+
+# local secrets
+.env
+data/processed.tar
+data/processed_prev/
+data/processed_swap/
+data/publicacoes.json
+data/entrada/
+data/entregas/
+data/versoes.json
+data/firms_tmp/
+dataset*.tar.gz
