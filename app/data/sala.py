@@ -2,7 +2,7 @@
 
 AI-assisted: written with Claude (Anthropic) and reviewed by the team.
 
-Reference day D = last day with data. For each Argentine department:
+Reference day D = last day with data. For each department (Argentina, Brazil, the Netherlands):
     R      hotspots in the last `win` days up to D
     Ex     expected hotspots for those days = mean count of the same calendar month in the baseline years,
            spread evenly over the month's days
@@ -54,10 +54,10 @@ class Sala:
         return _metrics(self.repo, self.repo.version, win)
 
     # ------------------------------------------------------------------ hotspots of the last day, grouped in cells
-    def today_cells(self, deps: list[str] | None, deg: float = 0.1) -> pd.DataFrame:
+    def today_cells(self, deps: list[str] | None, deg: float = 0.1, iso3: str = "ARG") -> pd.DataFrame:
         d = self.daily()
         D = d["D"]
-        where, prm = ("dep_id IN (" + ",".join("?" * len(deps)) + ")", list(deps)) if deps else ("TRUE", [])
+        where, prm = ("dep_id IN (" + ",".join("?" * len(deps)) + ")", list(deps)) if deps else ("iso3 = ?", [iso3])
         df = self.repo.q(f"""SELECT CAST(floor(lon/{deg}) AS INTEGER) gx, CAST(floor(lat/{deg}) AS INTEGER) gy, lon, lat, ts,
                                     CAST(ts AS DATE) dia, satelite, frp, dep_id, prov_id
                              FROM focos_arg WHERE {where} AND ts >= ? AND ts < ?""",
@@ -76,26 +76,27 @@ class Sala:
         out["novo"] = [(gx, gy) not in before for gx, gy in zip(out["gx"], out["gy"])]
         return out.sort_values(["n", "frp"], ascending=False)
 
-    def window_points(self, deps: list[str] | None, win: int, limit: int = 8000) -> pd.DataFrame:
-        """Hotspots of the last `win` days (most recent first), optionally restricted to some departments."""
+    def window_points(self, deps: list[str] | None, win: int, limit: int = 8000, iso3: str = "ARG") -> pd.DataFrame:
+        """Hotspots of the last `win` days (most recent first), restricted to some departments or to one country."""
         D = self.daily()["D"]
-        where, prm = ("dep_id IN (" + ",".join("?" * len(deps)) + ")", list(deps)) if deps else ("TRUE", [])
+        where, prm = ("dep_id IN (" + ",".join("?" * len(deps)) + ")", list(deps)) if deps else ("iso3 = ?", [iso3])
         df = self.repo.q(f"""SELECT lat, lon, ts, CAST(ts AS DATE) dia, satelite, frp, dep_id FROM focos_arg
                              WHERE {where} AND ts >= ? AND ts < ? ORDER BY ts DESC LIMIT {int(limit)}""",
                          prm + [pd.Timestamp(D - timedelta(days=win - 1)), pd.Timestamp(D + timedelta(days=1))])
         df["dia"] = pd.to_datetime(df["dia"]).dt.date
         return df
 
-    def sat_status(self) -> pd.DataFrame:
+    def sat_status(self, iso3: str = "ARG") -> pd.DataFrame:
         D = self.daily()["D"]
         return self.repo.q("""SELECT satelite, MAX(ts) ultimo, COUNT(*) FILTER (WHERE CAST(ts AS DATE) = ?) hoje
-                              FROM focos_arg WHERE ts >= ? GROUP BY 1 ORDER BY 1""", [D, pd.Timestamp(D - timedelta(days=30))])
+                              FROM focos_arg WHERE iso3 = ? AND ts >= ? GROUP BY 1 ORDER BY 1""", [D, iso3, pd.Timestamp(D - timedelta(days=30))])
 
 
 @lru_cache(maxsize=4)
 def _daily(repo: Repository, version: int) -> dict:
     val = "SUM(n_harm)" if repo.has_harm else "SUM(n)"
-    D = repo.q("SELECT MAX(dia) d FROM dia_dep")["d"].iloc[0]
+    # last day every country already has (one country's partial "today" must not empty the others)
+    D = repo.q("SELECT MIN(d) d FROM (SELECT iso3, MAX(dia) d FROM dia_dep GROUP BY 1)")["d"].iloc[0]
     D = pd.Timestamp(D).date()
     start = D - timedelta(days=DAYS - 1)
     days = pd.date_range(start, D, freq="D")

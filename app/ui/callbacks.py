@@ -38,6 +38,16 @@ def register(app, repo: Repository) -> None:
         u = geo.unit(st["kind"], st["uid"])
         return u.nome if u else st["uid"]
 
+    def country_of(st) -> str | None:
+        k, uid = st["kind"], st["uid"]
+        if k == "pais":
+            return uid
+        if k == "prov":
+            return geo.provincias[uid].parent
+        if k == "dep":
+            return geo.provincias[geo.departamentos[uid].parent].parent
+        return None
+
     def scope_bbox(st):
         if st["kind"] == "shape":
             xs = [p[0] for p in st["shape"]]; ys = [p[1] for p in st["shape"]]
@@ -210,15 +220,18 @@ def register(app, repo: Repository) -> None:
         # breadcrumb + chips
         crumbs = [html.Button(tr("América do Sul"), id={"type": "crumb", "k": "all", "id": "all"}, n_clicks=0)]
         k, uid = st["kind"], st["uid"]
-        if k in ("prov", "dep") or (k == "pais" and uid == "ARG"):
-            crumbs += [" › ", html.Button("Argentina", id={"type": "crumb", "k": "pais", "id": "ARG"}, n_clicks=0)]
+        country = country_of(st)
+        if country == "NLD":  # outside South America: the path starts at the country
+            crumbs = []
+        if k in ("prov", "dep") or (k == "pais" and uid in repo.adm):
+            crumbs += ([" › "] if crumbs else []) + [html.Button(geo.paises[country].nome, id={"type": "crumb", "k": "pais", "id": country}, n_clicks=0)]
             if k in ("prov", "dep"):
                 pid = uid if k == "prov" else geo.departamentos[uid].parent
                 crumbs += [" › ", html.Button(geo.provincias[pid].nome, id={"type": "crumb", "k": "prov", "id": pid}, n_clicks=0)]
             if k == "dep":
                 crumbs += [" › ", html.Span(geo.departamentos[uid].nome, className="cur")]
         elif k == "pais":
-            crumbs += [" › ", html.Span(geo.paises[uid].nome, className="cur")]
+            crumbs += ([" › "] if crumbs else []) + [html.Span(geo.paises[uid].nome, className="cur")]
         elif k == "shape":
             crumbs += [" › ", html.Span(tr("Área desenhada"), className="cur")]
         chips = []
@@ -277,11 +290,11 @@ def register(app, repo: Repository) -> None:
         if k == "all":
             df, kind, title = repo.territories("pais", f), "pais", tr("Países com mais focos")
             names = {u: geo.paises[u].nome for u in df["id"]}; areas = {u: geo.paises[u].area_km2 for u in df["id"]}
-        elif k == "pais" and uid == "ARG":
-            df, kind, title = repo.territories("prov", f), "prov", tr("Províncias com mais focos")
+        elif k == "pais" and uid in repo.adm:
+            df, kind, title = repo.territories("prov", f, uid), "prov", tr("Províncias com mais focos") if uid == "ARG" else tr("Estados/províncias com mais focos")
             names = {u: geo.provincias[u].nome for u in df["id"] if u in geo.provincias}; areas = {u: geo.provincias[u].area_km2 for u in names}
         elif k == "prov":
-            df, kind, title = repo.territories("dep", f, uid), "dep", tr("Departamentos com mais focos")
+            df, kind, title = repo.territories("dep", f, uid), "dep", tr("Departamentos com mais focos") if country_of(st) == "ARG" else tr("Municípios com mais focos")
             names = {u: geo.departamentos[u].nome for u in df["id"] if u in geo.departamentos}; areas = {u: geo.departamentos[u].area_km2 for u in names}
         else:
             deg = 0.05 if k in ("dep", "shape") else 0.25
@@ -331,17 +344,25 @@ def register(app, repo: Repository) -> None:
         lat = lambda v: math.degrees(2 * math.atan(math.exp(v)) - math.pi / 2)  # noqa: E731
         return [center["lon"] - dlon / 2, lat(y - dy), center["lon"] + dlon / 2, lat(y + dy)]
 
-    def in_argentina(bbox) -> bool:
-        a = geo.paises["ARG"].bbox
-        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-        return a[0] <= cx <= a[2] and a[1] <= cy <= a[3]
+    import shapely as _shp
+    adm_shapes = {iso: _shp.geometry.shape(geo.paises[iso].feature["geometry"]) for iso in repo.adm if iso in geo.paises} if repo.ready else {}
+
+    def adm_at(bbox) -> str | None:
+        """Country with provinces/departments under the centre of the view (Argentina, Brazil, the Netherlands)."""
+        c = _shp.Point((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+        hit = next((iso for iso, g in adm_shapes.items() if g.contains(c)), None)
+        if hit:
+            return hit
+        near = [(g.distance(c), iso) for iso, g in adm_shapes.items()]
+        return min(near)[1] if near and min(near)[0] < 1.0 else None  # just off the coast still counts
 
     def level_for(zoom, layer, bbox):
         lvl = next(name for lim, name in LEVELS if zoom < lim)
-        if not in_argentina(bbox) and lvl in ("prov", "dep"):
-            lvl = "pais" if zoom < 5.6 else "grid"  # provinces/departments only exist for Argentina
+        here = adm_at(bbox)
+        if not here and lvl in ("prov", "dep"):
+            lvl = "pais" if zoom < 5.6 else "grid"  # provinces/departments only for the countries in data/geo
         if layer == "dens":
-            return {"grid": "dep", "pts": "dep"}.get(lvl, lvl) if in_argentina(bbox) else "pais"
+            return {"grid": "dep", "pts": "dep"}.get(lvl, lvl) if here else "pais"
         if layer == "grid":
             return "grid"
         if layer == "pts":
@@ -414,7 +435,7 @@ def register(app, repo: Repository) -> None:
         zmax = units_trace("pais", geo.paises.values(), repo.territories("pais", tf), "países", lvl == "pais", 0.75 if lvl == "pais" else 0.45)
         if lvl == "pais":
             legend = ramp_legend(zmax, tr("Focos por 1.000 km²"))
-        if lvl in ("prov", "dep", "grid", "pts") and visible(geo.paises["ARG"].bbox):
+        if lvl in ("prov", "dep", "grid", "pts") and any(visible(geo.paises[i].bbox) for i in repo.adm if i in geo.paises):
             zp = units_trace("prov", geo.provincias.values(), repo.territories("prov", tf) if lvl == "prov" else empty, "províncias", lvl == "prov",
                              0.85 if lvl == "prov" else 0.35, line_w=1.0)
             if lvl == "prov":

@@ -2,7 +2,7 @@
 
 > NASA Space Apps Challenge 2026 · Challenge #9 — *MODIS and VIIRS Hot Spots* (proposed by CONAE, Argentina)
 
-A Python web app, centered on Argentina, for exploring fire hotspot activity from **2000 to today**. MODIS and VIIRS detections are joined into one series in the scale of a single VIIRS satellite, so the sensor change in 2012 stops looking like a rise in fire activity.
+A Python web app, centered on Argentina, for exploring fire hotspot activity from **2000 to today** across South America, with the full drill-down (provinces/states → departments/municipalities) for **Argentina, Brazil and the Netherlands**. MODIS and VIIRS detections are joined into one series in the scale of a single VIIRS satellite, so the sensor change in 2012 stops looking like a rise in fire activity.
 
 **Live site:** https://luk14236-space-apps-teu-2026.hf.space · interface in **Portuguese and English** (PT | EN switch at the top of every page).
 
@@ -16,7 +16,7 @@ A Python web app, centered on Argentina, for exploring fire hotspot activity fro
 
 ### Fire Hotspot Calendar (`/`)
 
-- **Map whose level of detail follows the zoom**: countries → provinces → departments → grid of cells → individual hotspots colored by satellite. Click to select, or draw a rectangle/polygon; every chart then shows only that area.
+- **Map whose level of detail follows the zoom**: countries → provinces/states → departments/municipalities → grid of cells → individual hotspots colored by satellite. The province and municipality levels exist for Argentina, Brazil and the Netherlands; the fine 0.05° grid and individual hotspots work everywhere. Click to select, or draw a rectangle/polygon; every chart then shows only that area.
 - **Month × year calendar** (Greenpeace Global Fire Calendar style) with monthly means and yearly totals; clicking a cell, month or year filters everything.
 - **Timeline brush** with playback, **KPIs** (hotspots, density, season peak, record year, month vs. median) and a **ranking** of the level below.
 - **The 2012 step**: yearly totals by sensor (raw × MODIS only × harmonized).
@@ -27,7 +27,7 @@ A Python web app, centered on Argentina, for exploring fire hotspot activity fro
 
 ### Situation Room (`/sala`)
 
-A decision dashboard organized by Endsley's situation-awareness levels. It compares the last 24 h / 7 days / 30 days with what is **expected** for the time of year (2019–2025 mean of the same month):
+A decision dashboard organized by Endsley's situation-awareness levels, for **Argentina, Brazil or the Netherlands** (country selector at the top). It compares the last 24 h / 7 days / 30 days with what is **expected** for the time of year (2019–2025 mean of the same month):
 alerts by department, priority queue, anomaly map (departments on alert drawn over provinces), 90-day horizon chart, priority quadrant, hotspots of the last day, cumulative season with a projection cone, season clock, satellite status. Widgets can be reordered, resized, hidden and added; three ready-made layouts.
 
 ### Admin (`/admin`, hidden, login required)
@@ -49,8 +49,9 @@ Target scale: **one VIIRS satellite (S-NPP)**. Summing S-NPP and NOAA-20 would d
 | Terra | only before Aqua existed (Nov 2000 – Jun 2002) | k_terra, otherwise 0 |
 | MODIS | 2012 onwards | 0 |
 
-- The ratios are fitted on the overlap **2013–2019** (before the Terra/Aqua orbit drift), per calendar month, falling back to the all-months ratio when counts are small.
-- The data team delivers `peso_harm` per hotspot; the app sums it for the **Harmonized** series. Until that column arrives, the monthly chart draws a **provisional estimate** with the same rule, clearly labelled.
+- The data team fits the Aqua → S-NPP and Terra → S-NPP conversion with a **quasi-Poisson model** per country and delivers the result as `peso_harm` on every hotspot (2000–2025). The app sums it for the **Harmonized** series; their totals match the team's monthly file.
+- Hotspots that arrived later without a weight (FIRMS days of 2026) get the model-free part of the same rule: S-NPP = 1, NOAA-20 = 1 only after S-NPP ended (1 Nov 2026), every other satellite = 0.
+- The in-app validation chart uses a simple S-NPP/Aqua ratio per calendar month fitted on **2013–2019** (before the Terra/Aqua orbit drift).
 - **Validation** for Argentina, 2012–2025: monthly correlation **0.98** between estimated and observed S-NPP; in the years outside the fit (2020–2025) the estimated total differs by about **−2%** from observed.
 
 ## Data
@@ -60,18 +61,19 @@ Target scale: **one VIIRS satellite (S-NPP)**. Summing S-NPP and NOAA-20 would d
 | [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) — MODIS C6.1 | Hotspots 2000 → today |
 | NASA FIRMS — VIIRS S-NPP / NOAA-20 / NOAA-21 (375 m) | Hotspots 2012 → today |
 | [FIRMS Area API](https://firms.modaps.eosdis.nasa.gov/api/area/) | Recent days (science product, near real time as fallback; needs a free `MAP_KEY`) |
-| [geoBoundaries](https://www.geoboundaries.org/) and [Natural Earth](https://github.com/topojson/world-atlas) | Argentine provinces/departments and country boundaries |
+| [FIRMS country archive](https://firms.modaps.eosdis.nasa.gov/country/) | Netherlands history 2000–2025 (yearly per-country files) |
+| [geoBoundaries](https://www.geoboundaries.org/) and [Natural Earth](https://github.com/topojson/world-atlas) | Provinces/states and departments/municipalities of Argentina, Brazil and the Netherlands; country boundaries |
 
 Field descriptions: [FIRMS attribute fields (Earthdata)](https://earthdata.nasa.gov/data/tools/firms/active-fire-data-attributes-modis-viirs).
 
-Current version: 77,292,426 hotspots from 13 South American countries, Nov 2000 → Nov 2026.
+Current version: 77,375,757 hotspots from 13 South American countries and the Netherlands, Nov 2000 → Nov 2026.
 
 ## Tech stack
 
 - **Python 3.10+**
 - **Dash 3 + Plotly 6**: app, linked charts, MapLibre map (`Choroplethmap` / `Scattermap`)
 - **DuckDB + Parquet**: fast queries over ~77 million hotspots, with monthly, daily and grid pre-aggregates; no database server
-- **Shapely 2**: assigns each Argentine hotspot to its province and department
+- **Shapely 2**: assigns each hotspot of Argentina, Brazil and the Netherlands to its province/state and department/municipality (in parallel, per country)
 - **Flask** blueprint for the admin; **gunicorn** in production
 - **pytest**: tests for every page, the admin and the translations
 - **Hugging Face Spaces** (Docker) + **GitHub Actions** for deployment

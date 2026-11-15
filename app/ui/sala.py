@@ -68,7 +68,7 @@ BODIES = {
     "map": lambda: [html.Div(className="row", children=[
         dcc.RadioItems(id="sala-tool", options=[{"label": tr("✋ Navegar"), "value": "pan"}, {"label": tr("▭ Retângulo"), "value": "select"},
                                                  {"label": tr("⬠ Polígono"), "value": "lasso"}], value="pan", className="seg small", inline=True),
-        go_btn("map", "ar", "", tr("Argentina inteira"), cls="mini")]),
+        go_btn("map", "ar", "", tr("País inteiro"), cls="mini")]),
         dcc.Graph(id="sala-map", config={"scrollZoom": True, "displaylogo": False, "doubleClick": False, "displayModeBar": False}, className="smap"),
         html.Div(id="sala-maplegend", className="maplegend")],
     "tri": lambda: [html.Div(id="sala-tri", className="tbl"),
@@ -110,18 +110,22 @@ def sala_layout(repo: Repository) -> html.Div:
     s = Sala(repo)
     d = s.daily()
     D = d["D"]
-    opts = [{"label": tr("{n} (província)", n=p.nome), "value": f"prov:{p.id}"} for p in repo.geo.provincias.values()]
-    opts += [{"label": f"{u.nome} ({repo.geo.provincias[u.parent].nome})", "value": f"dep:{u.id}"} for u in repo.geo.departamentos.values() if u.parent in repo.geo.provincias]
+    G = repo.geo
+    opts = [{"label": f"{p.nome} ({G.paises[p.parent].nome})", "value": f"prov:{p.id}"} for p in G.provincias.values()]
+    opts += [{"label": f"{u.nome} ({G.provincias[u.parent].nome}, {G.paises[G.provincias[u.parent].parent].nome})", "value": f"dep:{u.id}"}
+             for u in G.departamentos.values() if u.parent in G.provincias]
+    countries = [{"label": G.paises[i].nome, "value": i} for i in repo.adm if i in G.paises]
     return html.Div(className="app sala", children=[
-        dcc.Store(id="sala-st", data={"win": 7, "kind": "ar", "uid": "", "shape": [], "hl": None, "sort": ["score", -1]}),
+        dcc.Store(id="sala-st", data={"win": 7, "pais": "ARG", "kind": "ar", "uid": "", "shape": [], "hl": None, "sort": ["score", -1]}),
         dcc.Store(id="sala-layout", storage_type="local", data={"preset": "coord", "layout": PRESETS["coord"]}),
         dcc.Store(id="sala-edit", data=False), dcc.Store(id="sala-tool-sync"),
         html.Header(className="top", children=[
             html.Div(className="brand", children=[html.H1(tr("Sala de Situação · Focos de Calor")),
-                                                   html.Small(tr("Argentina · último dia com dados: {d}", d=f"{D:%d/%m/%Y}"))]),
+                                                   html.Small(tr("Último dia com dados: {d}", d=f"{D:%d/%m/%Y}"))]),
             html.Span([html.I(className="livedot"), "NRT"], className="live", title=tr("Os dias mais recentes vêm do NASA FIRMS em tempo quase real")),
             nav("sala"),
             html.Div(className="controls", children=[
+                dcc.Dropdown(id="sala-pais", options=countries, value="ARG", clearable=False, searchable=False, className="preset"),
                 dcc.Dropdown(id="sala-search", options=sorted(opts, key=lambda o: o["label"]), placeholder=tr("Província ou departamento"), className="search sm"),
                 html.Span(tr("Janela"), className="note"),
                 dcc.RadioItems(id="sala-win", options=[{"label": tr(v), "value": k} for k, v in WIN_L.items()], value=7, className="seg", inline=True),
@@ -213,13 +217,19 @@ def register_sala(app, repo: Repository) -> None:
         return cls + sty + [edits, "sala-body" + (" editing" if editing else "")]
 
     # ------------------------------------------------------------------ scope / selection state
-    @app.callback(Output("sala-st", "data"), Output("sala-search", "value"),
+    @app.callback(Output("sala-st", "data"), Output("sala-search", "value"), Output("sala-pais", "value"),
                   Input("sala-win", "value"), Input({"type": "sala-go", "s": ALL, "k": ALL, "id": ALL}, "n_clicks"),
                   Input("sala-map", "clickData"), Input("sala-map", "selectedData"), Input("sala-quad", "clickData"),
                   Input("sala-strip", "clickData"), Input("sala-search", "value"), Input({"type": "sala-sort", "k": ALL}, "n_clicks"),
-                  State("sala-st", "data"), prevent_initial_call=True)
-    def control(win, clicks, mapc, msel, quadc, stripc, search, sorts, st):
+                  Input("sala-pais", "value"), State("sala-st", "data"), prevent_initial_call=True)
+    def control(*args):
+        out = _control(*args)
+        st = out[0]
+        return out[0], out[1], (st.get("pais", "ARG") if isinstance(st, dict) else no_update)
+
+    def _control(win, clicks, mapc, msel, quadc, stripc, search, sorts, pais, st):
         st = dict(st)
+        st.setdefault("pais", "ARG")
         tid = ctx.triggered_id
         prop = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
         val = ctx.triggered[0]["value"] if ctx.triggered else None
@@ -229,11 +239,15 @@ def register_sala(app, repo: Repository) -> None:
         reset_search = no_update
         if tid == "sala-win":
             st["win"] = win
+        elif tid == "sala-pais":
+            if not pais or pais == st["pais"]:
+                return no_update, no_update
+            st.update(pais=pais, kind="ar", uid="", shape=[], hl=None)
         elif tid == "sala-search":
             if not search:
                 return no_update, no_update
             k, uid = search.split(":", 1)
-            st.update(kind=k, uid=uid, shape=[], hl=None)
+            st.update(kind=k, uid=uid, shape=[], hl=None, pais=country(k, uid))
             reset_search = None
         elif isinstance(tid, dict) and tid.get("type") == "sala-sort":
             if not val:
@@ -245,6 +259,8 @@ def register_sala(app, repo: Repository) -> None:
                 return no_update, no_update
             uid, _, hl = tid["id"].partition("|")
             st.update(kind=tid["k"], uid=uid, shape=[], hl=[float(v) for v in hl.split(",")] if hl else None)
+            if tid["k"] in ("prov", "dep"):
+                st["pais"] = country(tid["k"], uid)
         elif tid == "sala-map" and prop.endswith("selectedData"):
             pts = None
             for key in ("map", "mapbox"):
@@ -266,7 +282,7 @@ def register_sala(app, repo: Repository) -> None:
                 cd = ["prov", dep.parent] if st["kind"] == "ar" else ["dep", dep.id]
             if not cd or cd[0] not in ("prov", "dep"):
                 return no_update, no_update
-            st.update(kind=cd[0], uid=cd[1], shape=[], hl=None)
+            st.update(kind=cd[0], uid=cd[1], shape=[], hl=None, pais=country(cd[0], cd[1]))
         else:
             return no_update, no_update
         return st, reset_search
@@ -277,6 +293,13 @@ def register_sala(app, repo: Repository) -> None:
         Output("sala-tool-sync", "data"), Input("sala-tool", "value"), prevent_initial_call=True)
 
     dep_geoms = {}
+
+    def provs_of(iso3: str) -> list[str]:
+        return [p_.id for p_ in geo.provincias.values() if p_.parent == iso3]
+
+    def country(kind: str, uid: str) -> str:
+        pid = uid if kind == "prov" else geo.departamentos[uid].parent
+        return geo.provincias[pid].parent
 
     def shape_deps(shape):
         """Departments the drawn area touches (the daily metrics exist per department)."""
@@ -299,29 +322,32 @@ def register_sala(app, repo: Repository) -> None:
     def render(st, tool):
         s = Sala(repo)
         win, kind, uid = st["win"], st["kind"], st["uid"]
-        deps_m, provs_m = s.metrics(win)
+        pais = st.get("pais", "ARG")
+        deps_all, provs_all = s.metrics(win)
+        cdeps = [d_ for p_ in provs_of(pais) for d_ in geo.deps_of.get(p_, [])]
+        deps_m, provs_m = deps_all.loc[cdeps], provs_all.loc[[p_ for p_ in provs_of(pais) if p_ in provs_all.index]]
         d = s.daily()
         D = d["D"]
         wl = tr(WIN_L[win])
 
         if kind == "prov":
             scope_deps = geo.deps_of.get(uid, [])
-            units, unit_kind, scope_row, name = deps_m.loc[scope_deps], "dep", provs_m.loc[uid], geo.provincias[uid].nome
+            units, unit_kind, scope_row, name = deps_all.loc[scope_deps], "dep", provs_all.loc[uid], geo.provincias[uid].nome
         elif kind == "dep":
             pid = geo.departamentos[uid].parent
             scope_deps = [uid]
-            units, unit_kind, scope_row, name = deps_m.loc[geo.deps_of.get(pid, [])], "dep", deps_m.loc[uid], geo.departamentos[uid].nome
+            units, unit_kind, scope_row, name = deps_all.loc[geo.deps_of.get(pid, [])], "dep", deps_all.loc[uid], geo.departamentos[uid].nome
         elif kind == "shape":
             scope_deps = shape_deps(st["shape"])
-            units, unit_kind = deps_m.loc[scope_deps], "dep"
+            units, unit_kind = deps_all.loc[scope_deps], "dep"
             name = tr("Área desenhada · {n} departamentos", n=len(scope_deps)) if len(scope_deps) != 1 else tr("Área desenhada · 1 departamento")
             name = [name, html.Small(tr(" (números somam os departamentos que a área toca)"), className="note")]
             scope_row = _frame(d["A"].loc[scope_deps].sum().to_frame().T, d["E"].loc[scope_deps].sum().to_frame().T,
                                d["F"].loc[scope_deps].max().to_frame().T, win).iloc[0]
         else:
-            scope_deps = list(geo.departamentos)
-            units, unit_kind, name = provs_m, "prov", "Argentina"
-            scope_row = _frame(d["A"].sum().to_frame().T, d["E"].sum().to_frame().T, d["F"].max().to_frame().T, win).iloc[0]
+            scope_deps = cdeps
+            units, unit_kind, name = provs_m, "prov", geo.paises[pais].nome
+            scope_row = _frame(d["A"].loc[cdeps].sum().to_frame().T, d["E"].loc[cdeps].sum().to_frame().T, d["F"].loc[cdeps].max().to_frame().T, win).iloc[0]
         tri = deps_m if kind == "ar" else units
 
         al = deps_m[deps_m["status"].isin(["crit", "alert", "watch"])].sort_values("score", ascending=False)
@@ -331,7 +357,7 @@ def register_sala(app, repo: Repository) -> None:
                                     html.Span([html.B(fx(r.ratio)), tr(" o esperado · "), html.B(fmt(r.R)), tr(" focos em {w} · ativo há ", w=wl), html.B(str(r.pers)), " d"], className="hd")],
                          cls=f"acard {r.status}") for i, r in al.head(14).iterrows()] or [html.Span(tr("Nenhum departamento fora do normal nesta janela."), className="note")]
 
-        crumbs = [go_btn("crumb", "ar", "", "Argentina")]
+        crumbs = [go_btn("crumb", "ar", "", geo.paises[pais].nome)]
         if kind in ("prov", "dep"):
             pid = uid if kind == "prov" else geo.departamentos[uid].parent
             crumbs += [" › ", go_btn("crumb", "prov", pid, geo.provincias[pid].nome)]
@@ -342,7 +368,7 @@ def register_sala(app, repo: Repository) -> None:
         stat = [html.Span(lab(scope_row["status"]), className=f"pill {scope_row['status']}"),
                 html.Span(tr("{r} o esperado para {w} nesta época do ano", r=fx(scope_row['ratio']), w=wl), className="note")]
         trd = scope_row["trend"]
-        cells = s.today_cells(None if kind == "ar" else scope_deps)
+        cells = s.today_cells(None if kind == "ar" else scope_deps, iso3=pais)
         n_new = int(cells["novo"].sum()) if len(cells) else 0
         kp = [(tr("Focos · {w}", w=wl), fmtk(scope_row["R"]), tr("{a} {s}% vs. {w} anteriores", a='▲' if trd > .15 else '▼' if trd < -.15 else '▶',
                                                                     s=f"{'+' if trd >= 0 else ''}{fmt(min(trd, 9.99) * 100)}", w=wl)),
@@ -368,7 +394,7 @@ def register_sala(app, repo: Repository) -> None:
         cal = F.calendar(m, v, repo.mi0, repo.mi1, ())
         cal.update_layout(height=470)
         harm, harm_note = F.harmonization(m, repo.has_harm)
-        sat = sat_table(s.sat_status(), D)
+        sat = sat_table(s.sat_status(pais), D)
         return (acount, tr("Crítico: ≥3× o esperado e ≥{n} focos em {w}", n=RMIN[win], w=wl), alerts, crumbs, name, stat, kpis,
                 mapfig, maplegend, tri_el, strip, hleg, quad, hoje, temp, call, clock, clock_call, cal, harm,
                 dcc.Markdown(harm_note, dangerously_allow_html=True), sat, F.satellite_monthly(m, repo.has_harm)[0])
@@ -379,7 +405,7 @@ def register_sala(app, repo: Repository) -> None:
             return Filtro(kind="shape", uid="", shape=tuple(tuple(p) for p in st["shape"]), serie=serie)
         if st["kind"] in ("prov", "dep"):
             return Filtro(kind=st["kind"], uid=st["uid"], serie=serie)
-        return Filtro(kind="pais", uid="ARG", serie=serie)
+        return Filtro(kind="pais", uid=st.get("pais", "ARG"), serie=serie)
 
     # ------------------------------------------------------------------ map
     def dep_label(dep_id):
@@ -419,7 +445,7 @@ def register_sala(app, repo: Repository) -> None:
                                                customdata=[["dep", i, f"{hover(r)}<br>{r['sub']}"] for i, r in hot.iterrows()],
                                                hovertemplate="%{customdata[2]}<extra></extra>"))
         only_today = kind == "ar" and win > 1  # whole country: show only the last day to keep it readable
-        pts = s.window_points(None if kind == "ar" else scope_deps, 1 if only_today else win)
+        pts = s.window_points(None if kind == "ar" else scope_deps, 1 if only_today else win, iso3=st.get("pais", "ARG"))
         if len(pts):
             today = pts["dia"] == D
             for flag, color, size in ((False, F.ACCENT, 5), (True, "#111", 7)):
@@ -443,7 +469,7 @@ def register_sala(app, repo: Repository) -> None:
             xs, ys = [p[0] for p in st["shape"]], [p[1] for p in st["shape"]]
             bbox = (min(xs), min(ys), max(xs), max(ys))
         else:
-            bbox = geo.paises["ARG"].bbox
+            bbox = geo.paises[st.get("pais", "ARG")].bbox
         if st.get("hl"):  # cell picked in "Focos do último dia"
             gx, gy, g = st["hl"]
             x0, y0 = gx * g, gy * g

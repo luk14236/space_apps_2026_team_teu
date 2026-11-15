@@ -9,15 +9,18 @@ Input  (raw dir):
     focos_mensais_*.csv  optional, only used to cross-check totals.
 
 Output (out dir):
-    focos_arg.parquet, focos_outros.parquet   hotspots (Argentina with province/department ids)
+    focos_arg.parquet, focos_outros.parquet   hotspots: countries with provinces/departments in data/geo (Argentina,
+                                              Brazil, the Netherlands) with their ids / all other countries
     agg_pais / agg_prov / agg_dep.parquet     monthly counts x satellite
     dia_pais / dia_dep.parquet                daily counts x satellite (situation room)
-    cell_025 / cell_ar.parquet                pre-aggregated grids (0.25° continent, 0.05° Argentina)
+    cell_025 / cell_ar.parquet                pre-aggregated grids (0.25° and 0.05°, every country)
     meta.json                                 period, columns found and data-quality warnings
 """
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import time
 from pathlib import Path
 from typing import Callable
@@ -29,33 +32,69 @@ from shapely.geometry import shape
 
 ISO = {"Argentina": "ARG", "Bolívia": "BOL", "Brasil": "BRA", "Chile": "CHL", "Colômbia": "COL",
        "Equador": "ECU", "Guiana": "GUY", "Guiana Francesa": "GUF", "Paraguai": "PRY", "Peru": "PER",
-       "Suriname": "SUR", "Uruguai": "URY", "Venezuela": "VEN"}
+       "Suriname": "SUR", "Uruguai": "URY", "Venezuela": "VEN", "Países Baixos": "NLD"}
 REQUIRED = ["pais", "data_hora_gmt", "latitude", "longitude", "satelite", "sensor", "frp"]
 OPTIONAL = ["confidence", "daynight", "type", "peso_harm"]
 EXPECTED_SATS = ["TERRA", "AQUA", "SNPP", "NOAA20", "NOAA21"]
+
+
+# Rows without peso_harm (deliveries that came later, e.g. FIRMS days of 2026 or other countries) get the team's rule
+# from 2012 on: S-NPP = 1, NOAA-20 = 1 only after S-NPP delivery ended (2026-11-01), every other satellite = 0.
+# Before 2012 there is no fitted model for them, so they stay NULL (left out of the harmonized series).
+HARM_FILL = ("CASE WHEN upper(satelite) = 'SNPP' THEN 1.0 "
+             "WHEN upper(satelite) = 'NOAA20' AND CAST(data_hora_gmt AS TIMESTAMP) >= TIMESTAMP '2026-11-01' THEN 1.0 "
+             "WHEN CAST(data_hora_gmt AS TIMESTAMP) >= TIMESTAMP '2012-01-01' THEN 0.0 END")
 
 
 class PrepareError(Exception):
     pass
 
 
-def assign_departments(lon: np.ndarray, lat: np.ndarray, geo_dir: Path) -> tuple[np.ndarray, np.ndarray]:
-    """(dep_id, prov_id) for each point, from the department polygons; nearest department for coast/border pixels."""
-    feats = json.loads((geo_dir / "departamentos.geojson").read_text(encoding="utf-8"))["features"]
-    tree = shapely.STRtree([shape(f["geometry"]) for f in feats])
-    dep_ids = np.array([f["id"] for f in feats], dtype=object)
-    prov_ids = np.array([f["properties"]["provincia"] for f in feats], dtype=object)
+def adm_countries(geo_dir: Path) -> list[str]:
+    """ISO3 of the countries that have provinces/departments in data/geo."""
+    feats = json.loads((geo_dir / "provincias.geojson").read_text(encoding="utf-8"))["features"]
+    return sorted({f["properties"]["pais"] for f in feats})
+
+
+_TREE: dict = {}
+
+
+def _init_tree(geo_dir: str, iso3: str) -> None:
+    provs = {f["id"]: f["properties"]["pais"] for f in json.loads((Path(geo_dir) / "provincias.geojson").read_text(encoding="utf-8"))["features"]}
+    feats = [f for f in json.loads((Path(geo_dir) / "departamentos.geojson").read_text(encoding="utf-8"))["features"]
+             if provs.get(f["properties"]["provincia"]) == iso3]
+    _TREE.update(tree=shapely.STRtree([shape(f["geometry"]) for f in feats]),
+                 dep=np.array([f["id"] for f in feats], dtype=object), prov=np.array([f["properties"]["provincia"] for f in feats], dtype=object))
+
+
+def _assign_chunk(args) -> np.ndarray:
+    lon, lat = args
+    tree = _TREE["tree"]
+    pts = shapely.points(lon, lat)
     out = np.full(len(lon), -1, dtype=np.int32)
-    step = 1_000_000
-    for s in range(0, len(lon), step):
-        pts = shapely.points(lon[s:s + step], lat[s:s + step])
-        pi, gi = tree.query(pts, predicate="within")
-        out[s + pi] = gi
-        miss = np.where(out[s:s + step] < 0)[0]
-        if len(miss):
-            ni, ng = tree.query_nearest(pts[miss], all_matches=False)
-            out[s + miss[ni]] = ng
-    return dep_ids[out], prov_ids[out]
+    pi, gi = tree.query(pts, predicate="within")
+    out[pi] = gi
+    miss = np.where(out < 0)[0]
+    if len(miss):  # coast and border pixels: nearest department of the same country
+        ni, ng = tree.query_nearest(pts[miss], all_matches=False)
+        out[miss[ni]] = ng
+    return out
+
+
+def assign_departments(lon: np.ndarray, lat: np.ndarray, geo_dir: Path, iso3: str = "ARG") -> tuple[np.ndarray, np.ndarray]:
+    """(dep_id, prov_id) for each point of one country, in parallel chunks."""
+    import multiprocessing as mp
+    step = 500_000
+    chunks = [(lon[s:s + step], lat[s:s + step]) for s in range(0, len(lon), step)]
+    if len(chunks) > 1:
+        with mp.get_context("fork").Pool(min(len(chunks), max(1, (os.cpu_count() or 2) - 1)), _init_tree, (str(geo_dir), iso3)) as pool:
+            parts = pool.map(_assign_chunk, chunks)
+    else:
+        _init_tree(str(geo_dir), iso3)
+        parts = [_assign_chunk(c) for c in chunks]
+    idx = np.concatenate(parts) if parts else np.array([], dtype=np.int32)
+    _init_tree(str(geo_dir), iso3)
+    return _TREE["dep"][idx], _TREE["prov"][idx]
 
 
 def run(raw: Path | None, out: Path, geo_dir: Path, log: Callable[[str], None] = print,
@@ -94,34 +133,46 @@ def run(raw: Path | None, out: Path, geo_dir: Path, log: Callable[[str], None] =
         CAST(year(data_hora_gmt) AS SMALLINT) AS ano, CAST(month(data_hora_gmt) AS TINYINT) AS mes,
         CAST(latitude AS FLOAT) AS lat, CAST(longitude AS FLOAT) AS lon, upper(satelite) AS satelite,
         upper(sensor) AS sensor, CAST(frp AS FLOAT) AS frp""" + "".join(
-        f", CAST({c} AS VARCHAR) AS {c}" if c in ("confidence", "daynight") else f", {c}" for c in extra)
+        f", CAST({c} AS VARCHAR) AS {c}" if c in ("confidence", "daynight") else
+        f", CAST(COALESCE(peso_harm, {HARM_FILL}) AS DOUBLE) AS peso_harm" if c == "peso_harm" else f", {c}" for c in extra)
 
     warnings: list[str] = []
     unknown = con.execute(f"SELECT DISTINCT pais FROM {src} WHERE ({iso_case}) IS NULL").fetchall()
     if unknown:
         warnings.append(f"Países sem código ISO (ignorados): {[u[0] for u in unknown]}")
 
-    con.execute(f"COPY (SELECT {sel} FROM {src} WHERE pais <> 'Argentina' AND ({iso_case}) IS NOT NULL ORDER BY iso3, ts) "
-                f"TO '{P('focos_outros.parquet')}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 500000)")
+    adm = adm_countries(geo_dir)
+    adm_sql = ", ".join(f"'{a}'" for a in adm)
+    # spatial order inside each country lets DuckDB skip row groups when the map asks for one area
+    con.execute(f"COPY (SELECT {sel} FROM {src} WHERE ({iso_case}) IS NOT NULL AND ({iso_case}) NOT IN ({adm_sql}) "
+                f"ORDER BY iso3, floor(lat), floor(lon), ts) "
+                f"TO '{P('focos_outros.parquet')}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 250000)")
     say("focos_outros.parquet gravado")
 
-    ar = con.execute(f"SELECT {sel} FROM {src} WHERE pais = 'Argentina'").df()
-    say(f"Argentina: {len(ar):,} focos; atribuindo províncias e departamentos")
-    ar["dep_id"], ar["prov_id"] = assign_departments(ar["lon"].to_numpy("float64"), ar["lat"].to_numpy("float64"), geo_dir)
-    ar = ar.sort_values(["prov_id", "dep_id", "ts"])  # lets DuckDB skip row groups when filtering one department
-    con.register("ar_df", ar)
-    con.execute(f"COPY (SELECT * FROM ar_df) TO '{P('focos_arg.parquet')}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 250000)")
-    con.unregister("ar_df")
-    del ar
-    say("focos_arg.parquet gravado")
+    tmp = out / "_adm_tmp"
+    tmp.mkdir(exist_ok=True)
+    for iso in adm:
+        df = con.execute(f"SELECT {sel} FROM {src} WHERE ({iso_case}) = '{iso}'").df()
+        say(f"{iso}: {len(df):,} focos; atribuindo províncias e departamentos")
+        if df.empty:
+            continue
+        df["dep_id"], df["prov_id"] = assign_departments(df["lon"].to_numpy("float64"), df["lat"].to_numpy("float64"), geo_dir, iso)
+        con.register("adm_df", df)
+        con.execute(f"COPY (SELECT * FROM adm_df) TO '{(tmp / (iso + '.parquet')).as_posix()}' (FORMAT parquet, COMPRESSION zstd)")
+        con.unregister("adm_df")
+        del df
+    con.execute(f"COPY (SELECT * FROM read_parquet('{tmp.as_posix()}/*.parquet', union_by_name=true) ORDER BY iso3, prov_id, dep_id, ts) "
+                f"TO '{P('focos_arg.parquet')}' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 250000)")
+    shutil.rmtree(tmp, ignore_errors=True)
+    say("focos_arg.parquet gravado (países com províncias: " + ", ".join(adm) + ")")
 
     arg = f"read_parquet('{P('focos_arg.parquet')}')"
     allf = f"read_parquet(['{P('focos_arg.parquet')}', '{P('focos_outros.parquet')}'], union_by_name=true)"
     harm = ", SUM(peso_harm) AS n_harm" if "peso_harm" in extra else ""
-    jobs = [("agg_pais", "iso3, ano, mes", allf), ("agg_prov", "prov_id, ano, mes", arg), ("agg_dep", "dep_id, prov_id, ano, mes", arg),
-            ("dia_pais", "iso3, CAST(ts AS DATE) AS dia", allf), ("dia_dep", "dep_id, prov_id, CAST(ts AS DATE) AS dia", arg),
+    jobs = [("agg_pais", "iso3, ano, mes", allf), ("agg_prov", "iso3, prov_id, ano, mes", arg), ("agg_dep", "iso3, dep_id, prov_id, ano, mes", arg),
+            ("dia_pais", "iso3, CAST(ts AS DATE) AS dia", allf), ("dia_dep", "iso3, dep_id, prov_id, CAST(ts AS DATE) AS dia", arg),
             ("cell_025", "iso3, CAST(floor(lon/0.25) AS INTEGER) gx, CAST(floor(lat/0.25) AS INTEGER) gy, ano, mes", allf),
-            ("cell_ar", "prov_id, dep_id, CAST(floor(lon/0.05) AS INTEGER) gx, CAST(floor(lat/0.05) AS INTEGER) gy, ano, mes", arg)]
+            ("cell_ar", "iso3, prov_id, dep_id, CAST(floor(lon/0.05) AS INTEGER) gx, CAST(floor(lat/0.05) AS INTEGER) gy, ano, mes", allf)]
     for name, keys, source in jobs:
         con.execute(f"COPY (SELECT {keys}, satelite, sensor, COUNT(*) AS n, MAX(frp) AS frp_max{harm} "
                     f"FROM {source} GROUP BY ALL ORDER BY ALL) TO '{P(name + '.parquet')}' (FORMAT parquet, COMPRESSION zstd)")

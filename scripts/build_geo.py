@@ -4,7 +4,8 @@ AI-assisted: written with Claude (Anthropic) and reviewed by the team.
 
 Sources (downloaded once into data/cache/):
 - Countries: Natural Earth 1:50m via the `world-atlas` npm package (TopoJSON).
-- Argentina provinces (ADM1) and departments (ADM2): geoBoundaries gbOpen.
+- Provinces/states (ADM1) and departments/municipalities (ADM2) of Argentina, Brazil and the Netherlands:
+  geoBoundaries gbOpen. Every province carries its country (`pais`), every department its province.
 
 Fixes applied:
 - geoBoundaries ADM1 merges Entre Ríos into Buenos Aires; we split it along the Paraná.
@@ -19,6 +20,7 @@ import math
 import urllib.request
 from pathlib import Path
 
+import shapely
 from shapely.geometry import MultiPolygon, Polygon, mapping, shape
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
@@ -32,6 +34,12 @@ URLS = {
     "adm1": "https://github.com/wmgeolab/geoBoundaries/raw/9469f09/releaseData/gbOpen/ARG/ADM1/geoBoundaries-ARG-ADM1_simplified.geojson",
     "adm2": "https://github.com/wmgeolab/geoBoundaries/raw/9469f09/releaseData/gbOpen/ARG/ADM2/geoBoundaries-ARG-ADM2_simplified.geojson",
 }
+GB = "https://github.com/wmgeolab/geoBoundaries/raw/9469f09/releaseData/gbOpen/{iso}/{lvl}/geoBoundaries-{iso}-{lvl}_simplified.geojson"
+# Other countries with the full drill-down: ISO3 -> (simplification of ADM1, of ADM2, in degrees)
+EXTRA_ADM = {"BRA": (0.01, 0.005), "NLD": (0.002, 0.001)}
+for _iso in EXTRA_ADM:
+    URLS[f"{_iso}_adm1"] = GB.format(iso=_iso, lvl="ADM1")
+    URLS[f"{_iso}_adm2"] = GB.format(iso=_iso, lvl="ADM2")
 
 # Country names exactly as they appear in the data team's files -> (ISO3, Natural Earth name)
 COUNTRIES = {
@@ -48,7 +56,15 @@ COUNTRIES = {
     "Suriname": ("SUR", "Suriname"),
     "Uruguai": ("URY", "Uruguay"),
     "Venezuela": ("VEN", "Venezuela"),
+    "Países Baixos": ("NLD", "Netherlands"),  # European part only (clipped below)
 }
+# geoBoundaries spells Brazilian states without accents (and two with typos): official names by ISO code
+STATE_NAMES = {"BR-AC": "Acre", "BR-AL": "Alagoas", "BR-AP": "Amapá", "BR-AM": "Amazonas", "BR-BA": "Bahia", "BR-CE": "Ceará",
+               "BR-DF": "Distrito Federal", "BR-ES": "Espírito Santo", "BR-GO": "Goiás", "BR-MA": "Maranhão", "BR-MT": "Mato Grosso",
+               "BR-MS": "Mato Grosso do Sul", "BR-MG": "Minas Gerais", "BR-PA": "Pará", "BR-PB": "Paraíba", "BR-PR": "Paraná",
+               "BR-PE": "Pernambuco", "BR-PI": "Piauí", "BR-RJ": "Rio de Janeiro", "BR-RN": "Rio Grande do Norte", "BR-RS": "Rio Grande do Sul",
+               "BR-RO": "Rondônia", "BR-RR": "Roraima", "BR-SC": "Santa Catarina", "BR-SP": "São Paulo", "BR-SE": "Sergipe", "BR-TO": "Tocantins"}
+CLIP = {"NLD": Polygon([(3, 50.5), (7.5, 50.5), (7.5, 54), (3, 54)])}
 
 REGION = {  # Argentine statistical regions
     "Jujuy": "NOA", "Salta": "NOA", "Tucumán": "NOA", "Catamarca": "NOA", "Santiago del Estero": "NOA",
@@ -146,7 +162,7 @@ def main() -> None:
     feats = []
     for nome, (iso, ne) in COUNTRIES.items():
         if ne:
-            geom = world[ne]
+            geom = world[ne].intersection(CLIP[iso]) if iso in CLIP else world[ne]
         else:  # French Guiana: the part of France inside South America
             box = Polygon([(-55, 1.5), (-51, 1.5), (-51, 6.5), (-55, 6.5)])
             geom = world["France"].intersection(box)
@@ -163,8 +179,6 @@ def main() -> None:
     provs["Buenos Aires"] = (ba_iso, ba.difference(ENTRE_RIOS_CUT))
     pfeats = [to_feature(g, {"id": iso, "nome": n, "regiao": REGION[n], "pais": "ARG", "nivel": "provincia"}, 0.01)
               for n, (iso, g) in sorted(provs.items())]
-    write("provincias.geojson", pfeats)
-
     pgeoms = {iso: g for _, (iso, g) in provs.items()}
     adm2 = json.loads(fetch("adm2").read_text())
     dfeats = []
@@ -178,7 +192,37 @@ def main() -> None:
             parent = min(pgeoms, key=lambda iso: pgeoms[iso].distance(pt))
         dfeats.append(to_feature(g, {"id": f["properties"]["shapeID"], "nome": f["properties"]["shapeName"],
                                      "provincia": parent, "nivel": "departamento"}, 0.005))
+    for iso, (tol1, tol2) in EXTRA_ADM.items():
+        p2, d2 = extra_country(iso, tol1, tol2)
+        pfeats += p2
+        dfeats += d2
+    write("provincias.geojson", pfeats)
     write("departamentos.geojson", dfeats)
+
+
+def extra_country(iso: str, tol1: float, tol2: float) -> tuple[list[dict], list[dict]]:
+    """ADM1 + ADM2 of another country; departments get the province that contains them."""
+    pgeoms, pfeats = {}, []
+    for f in json.loads(fetch(f"{iso}_adm1").read_text())["features"]:
+        pr = f["properties"]
+        pid = pr.get("shapeISO") or pr["shapeID"]
+        g = shape(f["geometry"]).buffer(0)
+        pgeoms[pid] = g
+        pfeats.append(to_feature(g, {"id": pid, "nome": STATE_NAMES.get(pid, pr["shapeName"]), "pais": iso, "nivel": "provincia"}, tol1))
+    tree_ids = list(pgeoms)
+    tree = shapely.STRtree([pgeoms[k] for k in tree_ids])
+    dfeats = []
+    for f in json.loads(fetch(f"{iso}_adm2").read_text())["features"]:
+        g = shape(f["geometry"]).buffer(0)
+        if g.is_empty:
+            continue
+        pt = g.representative_point()
+        hit = tree.query(pt, predicate="within")
+        parent = tree_ids[hit[0]] if len(hit) else tree_ids[tree.query_nearest(pt)[0]]
+        dfeats.append(to_feature(g, {"id": f["properties"]["shapeID"], "nome": f["properties"]["shapeName"],
+                                     "provincia": parent, "nivel": "departamento"}, tol2))
+    print(f"{iso}: {len(pfeats)} provinces/states, {len(dfeats)} departments/municipalities")
+    return pfeats, dfeats
 
 
 if __name__ == "__main__":

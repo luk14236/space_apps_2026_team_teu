@@ -410,4 +410,10 @@ EN: dict[str, str] = {
     "{a}–{b}: correlação mensal <b>{r}</b> entre estimado e observado. Nos anos fora do ajuste ({c}–{b}), o total estimado difere <b>{e}%</b> do observado. Razões ajustadas em {f}–{g}.":
         "{a}–{b}: monthly correlation of <b>{r}</b> between estimated and observed. In the years outside the fit ({c}–{b}), the estimated total differs by <b>{e}%</b> from observed. Ratios fitted on {f}–{g}.",
 
+    # ---------------------------------------------------------------- Brazil and the Netherlands
+    "Estados/províncias com mais focos": "States/provinces with most hotspots",
+    "Municípios com mais focos": "Municipalities with most hotspots",
+    "País inteiro": "Whole country",
+    "Países Baixos": "Netherlands",
+    "Último dia com dados: {d}": "Last day with data: {d}",
 }

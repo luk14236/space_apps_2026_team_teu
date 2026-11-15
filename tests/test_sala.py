@@ -91,3 +91,10 @@ def test_focus_buttons_have_unique_ids(app, kind):
     page = sala_layout(Repository(config.PROCESSED_DIR, Geo(config.GEO_DIR)))  # static buttons ("Argentina inteira") live here
     ids = _ids([out[0], out[2], out[3], out[9], out[13], page], [])
     assert len(ids) == len(set(ids)), [i for i in ids if ids.count(i) > 1][:5]
+
+
+@pytest.mark.parametrize("pais", ["BRA", "NLD"])
+def test_render_sala_other_countries(app, pais):
+    out = _render(app)({"win": 7, "pais": pais, "kind": "ar", "uid": "", "shape": [], "hl": None, "sort": ["score", -1]}, "pan")
+    to_json_plotly(list(out))
+    assert out[4]  # title = country name

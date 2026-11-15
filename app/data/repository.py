@@ -91,6 +91,8 @@ class Repository:
         self.mi0, self.mi1 = int(r.iloc[0]), int(r.iloc[1])
         self.y0, self.y1 = self.mi0 // 12, self.mi1 // 12
         self.sats = tuple(self.meta.get("satelites", []))
+        # countries whose hotspots carry province/department ids (focos_arg.parquet; the name is historical)
+        self.adm = tuple(sorted({p.parent for p in self.geo.provincias.values()}))
         self.ready = True
 
     # ---------------------------------------------------------------- helpers
@@ -137,21 +139,16 @@ class Repository:
 
     def _points_scope(self, f: Filtro) -> tuple[str, str, list]:
         """(view, where, params) for queries that need individual hotspots."""
-        if f.kind == "shape":
+        if f.kind == "shape":  # both files: an area may cross a border; they are stored in spatial order
             xs = [p[0] for p in f.shape]; ys = [p[1] for p in f.shape]
-            view = "focos_arg" if self._inside_argentina(min(xs), min(ys), max(xs), max(ys)) else "focos"
-            return view, "lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?", [min(xs), max(xs), min(ys), max(ys)]
+            return "focos", "lon BETWEEN ? AND ? AND lat BETWEEN ? AND ?", [min(xs), max(xs), min(ys), max(ys)]
         if f.kind == "prov":
             return "focos_arg", "prov_id = ?", [f.uid]
         if f.kind == "dep":
             return "focos_arg", "dep_id = ?", [f.uid]
         if f.kind == "pais":
-            return ("focos_arg", "TRUE", []) if f.uid == "ARG" else ("focos", "iso3 = ?", [f.uid])
+            return ("focos_arg" if f.uid in getattr(self, "adm", ()) else "focos"), "iso3 = ?", [f.uid]
         return "focos", "TRUE", []
-
-    def _inside_argentina(self, x0, y0, x1, y1) -> bool:
-        b = self.geo.paises["ARG"].bbox
-        return x0 >= b[0] and y0 >= b[1] and x1 <= b[2] and y1 <= b[3]
 
     def _shape_mask(self, df: pd.DataFrame, f: Filtro) -> pd.DataFrame:
         if f.kind != "shape" or df.empty:
@@ -204,6 +201,8 @@ class Repository:
         where, prm = "TRUE", []
         if level == "dep" and parent:
             where, prm = "prov_id = ?", [parent]
+        elif level == "prov" and parent:  # parent = country ISO3
+            where, prm = "iso3 = ?", [parent]
         if f.kind == "shape":  # count only hotspots inside the drawn area
             view, sw, spp = self._points_scope(f)
             df = self.q(f"SELECT lon, lat, {key} AS id, mes, frp, sensor, peso_harm FROM {view} WHERE {sw} AND {ts} AND {sat}", spp + tp + sp)
@@ -229,9 +228,9 @@ class Repository:
         if not self.has_cells or f.kind == "shape":
             return None
         multiple = lambda base: deg >= base - 1e-9 and abs(deg / base - round(deg / base)) < 1e-6  # noqa: E731
-        if f.kind in ("prov", "dep") or (f.kind == "pais" and f.uid == "ARG" and deg < 0.25):
-            if multiple(0.05):
-                where = {"prov": ("prov_id = ?", [f.uid]), "dep": ("dep_id = ?", [f.uid]), "pais": ("TRUE", [])}[f.kind]
+        if f.kind in ("prov", "dep") or (f.kind in ("pais", "all") and deg < 0.25):
+            if multiple(0.05):  # cell_ar: 0.05° cells of every country (the name is historical)
+                where = {"prov": ("prov_id = ?", [f.uid]), "dep": ("dep_id = ?", [f.uid]), "pais": ("iso3 = ?", [f.uid]), "all": ("TRUE", [])}[f.kind]
                 return "cell_ar", 0.05, where
         if f.kind in ("all", "pais") and multiple(0.25):
             return "cell_025", 0.25, ("TRUE", []) if f.kind == "all" else ("iso3 = ?", [f.uid])
@@ -292,13 +291,8 @@ class Repository:
         ts, tp = self._time_sql(f)
         sat, sp = self._sat_sql(f)
         val = self.value_expr(f.serie, agg=True)
-        ar = self.geo.paises["ARG"].bbox
-        inside_ar = x0 >= ar[0] - 1 and x1 <= ar[2] + 1 and y0 >= ar[1] - 1 and y1 <= ar[3] + 1
         base = 0.25 if deg >= 0.25 - 1e-9 else 0.05
-        tab = "cell_025" if base == 0.25 or not inside_ar else "cell_ar"
-        if tab == "cell_025":
-            base = 0.25
-            deg = max(deg, 0.25)
+        tab = "cell_025" if base == 0.25 else "cell_ar"  # cell_ar: 0.05° cells everywhere
         k = deg / base
         gx0, gx1 = int(np.floor(x0 / base)), int(np.floor(x1 / base))
         gy0, gy1 = int(np.floor(y0 / base)), int(np.floor(y1 / base))
@@ -319,8 +313,7 @@ class Repository:
         x0, y0, x1, y1 = bbox
         ts, tp = self._time_sql(f)
         sat, sp = self._sat_sql(f)
-        ar = self.geo.paises["ARG"].bbox
-        view = "focos_arg" if (x0 >= ar[0] - 1 and x1 <= ar[2] + 1 and y0 >= ar[1] - 1 and y1 <= ar[3] + 1) else "focos"
+        view = "focos"  # both files are in spatial order, so the bbox filter skips most row groups
         cond = " AND sensor='MODIS'" if f.serie == "modis" else ""
         where = f"lon BETWEEN ? AND ? AND lat BETWEEN ? AND ? AND {ts} AND {sat}{cond}"
         prm = [x0, x1, y0, y1] + tp + sp
@@ -333,7 +326,7 @@ class Repository:
         ts, tp = self._time_sql(f)
         sat, sp = self._sat_sql(f)
         cond = " AND sensor='MODIS'" if f.serie == "modis" else (" AND (sensor='VIIRS' OR ano < 2012)" if f.serie == "harm" and not self.has_harm else "")
-        df = self.q(f"""SELECT lat, lon, ts, satelite, sensor, frp, iso3, {'dep_id, prov_id' if view == 'focos_arg' else 'NULL AS dep_id, NULL AS prov_id'}
+        df = self.q(f"""SELECT lat, lon, ts, satelite, sensor, frp, iso3, dep_id, prov_id
                         FROM {view} WHERE {where} AND {ts} AND {sat}{cond} ORDER BY ts DESC LIMIT {int(limit) * 3}""", prm + tp + sp)
         return self._shape_mask(df, f).head(limit)
 

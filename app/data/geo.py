@@ -60,7 +60,7 @@ class Geo:
 
     def search_options(self) -> list[dict]:
         opts = [{"label": tr("{n} (país)", n=u.nome), "value": f"pais:{u.id}"} for u in self.paises.values()]
-        opts += [{"label": tr("{n} (província, Argentina)", n=u.nome), "value": f"prov:{u.id}"} for u in self.provincias.values()]
-        opts += [{"label": f"{u.nome} ({self.provincias[u.parent].nome})", "value": f"dep:{u.id}"}
+        opts += [{"label": f"{u.nome} ({self.paises[u.parent].nome})", "value": f"prov:{u.id}"} for u in self.provincias.values()]
+        opts += [{"label": f"{u.nome} ({self.provincias[u.parent].nome}, {self.paises[self.provincias[u.parent].parent].nome})", "value": f"dep:{u.id}"}
                  for u in self.departamentos.values() if u.parent in self.provincias]
         return sorted(opts, key=lambda o: o["label"])

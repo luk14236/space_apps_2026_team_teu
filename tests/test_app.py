@@ -71,3 +71,25 @@ def test_monthly_matches_total(app_and_repo):
     _, repo = app_and_repo
     from app.data.repository import Filtro
     assert repo.monthly(Filtro(kind="all", uid="all"))["raw"].sum() == repo.meta["total_focos"]
+
+
+@pytest.mark.parametrize("center", [(-55.0, -12.0), (5.6, 52.3)], ids=["brasil", "holanda"])
+@pytest.mark.parametrize("zoom,expected", [(5, "províncias"), (6.5, "departamentos"), (8, "grade"), (10, "focos individuais")])
+def test_zoom_drill_down_in_brazil_and_netherlands(app_and_repo, center, zoom, expected):
+    """Brazil and the Netherlands have the same drill-down as Argentina (states/provinces, municipalities, fine grid)."""
+    app, repo = app_and_repo
+    st = _states(repo)["argentina"]
+    view = _callback(app, "mapview.data")({"map.zoom": zoom, "map.center": {"lon": center[0], "lat": center[1]}}, st, None)
+    fig, legend, level = _callback(app, "map.figure")(st, view)
+    assert expected in level
+    to_json_plotly([fig, legend])
+
+
+@pytest.mark.parametrize("kind,uid", [("pais", "NLD"), ("prov", "BR-MT"), ("prov", "NL-GE")])
+def test_render_brazil_and_netherlands(app_and_repo, kind, uid):
+    app, repo = app_and_repo
+    st = copy.deepcopy(_states(repo)["argentina"])
+    st.update(kind=kind, uid=uid)
+    panel = _callback(app, "crumbs.children")(st)
+    to_json_plotly(list(panel))
+    assert panel[13]  # ranking rows
