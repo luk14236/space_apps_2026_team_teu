@@ -14,14 +14,19 @@ from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
 
 from ..data.repository import Filtro, Repository
 from ..data.sala import LABEL, RMIN, Sala, _frame
+from ..i18n import months, months_long, ordinal, tr
 from . import figures as F
 from .layout import nav
 
-fmt, fmt1, fmtk, MESES, MESES_L = F.fmt, F.fmt1, F.fmtk, F.MESES, F.MESES_L
+fmt, fmt1, fmtk = F.fmt, F.fmt1, F.fmtk
+
+
+def lab(status: str) -> str:
+    return tr(LABEL[status])
 STATUS_C = {"crit": "#b42318", "alert": "#c96a00", "watch": "#9a7a00", "ok": "#3f8f6b", "below": "#2f6fb8"}
 CLS_C = ["#2f6fb8", "#a9c8ea", "#ecedef", "#f8d3a8", "#f0a35a", "#d9582a", "#8f1d1f"]
 CLS_L = ["½×", "¾×", "normal", "1,5×", "2×", "3×", "5×+"]
-WIN_L = {1: "24 h", 7: "7 dias", 30: "30 dias"}
+WIN_L = {1: "24 h", 7: "7 dias", 30: "30 dias"}  # tr() at use
 SIZES = ["S", "M", "L", "XL"]
 WIDGETS = {
     "map": ("Seleção", "Mapa de anomalia", "Onde está fora do normal? Clique ou desenhe uma área para focar."),
@@ -40,7 +45,7 @@ PRESETS = {
     "resp": [["map", "L"], ["hoje", "S"], ["tri", "L"], ["sat", "S"], ["horizon", "XL"]],
     "hist": [["cal", "M"], ["temp", "M"], ["harm", "L"], ["clock", "S"], ["horizon", "L"], ["map", "S"]],
 }
-PRESET_L = {"coord": "Coordenação", "resp": "Resposta imediata", "hist": "Análise histórica"}
+PRESET_L = {"coord": "Coordenação", "resp": "Resposta imediata", "hist": "Análise histórica"}  # tr() at use
 graph_cfg = {"displaylogo": False, "displayModeBar": False}
 
 
@@ -61,16 +66,16 @@ def go_btn(src, kind, uid, children, cls="", hl=None):
 
 BODIES = {
     "map": lambda: [html.Div(className="row", children=[
-        dcc.RadioItems(id="sala-tool", options=[{"label": "✋ Navegar", "value": "pan"}, {"label": "▭ Retângulo", "value": "select"},
-                                                 {"label": "⬠ Polígono", "value": "lasso"}], value="pan", className="seg small", inline=True),
-        go_btn("map", "ar", "", "Argentina inteira", cls="mini")]),
+        dcc.RadioItems(id="sala-tool", options=[{"label": tr("✋ Navegar"), "value": "pan"}, {"label": tr("▭ Retângulo"), "value": "select"},
+                                                 {"label": tr("⬠ Polígono"), "value": "lasso"}], value="pan", className="seg small", inline=True),
+        go_btn("map", "ar", "", tr("Argentina inteira"), cls="mini")]),
         dcc.Graph(id="sala-map", config={"scrollZoom": True, "displaylogo": False, "doubleClick": False, "displayModeBar": False}, className="smap"),
         html.Div(id="sala-maplegend", className="maplegend")],
     "tri": lambda: [html.Div(id="sala-tri", className="tbl"),
-                    html.P("Clique no título de uma coluna para ordenar; numa linha para focar.", className="note")],
+                    html.P(tr("Clique no título de uma coluna para ordenar; numa linha para focar."), className="note")],
     "horizon": lambda: [dcc.Graph(id="sala-strip", config=graph_cfg), html.Div(id="sala-hlegend", className="legend"),
-                        html.P("Horizon chart: cada faixa de cor dobra a escala (2×, 4×, 8×), então muitas áreas cabem no mesmo espaço. "
-                               "Linhas ordenadas por prioridade; a caixa tracejada é a janela atual.", className="note")],
+                        html.P(tr("Horizon chart: cada faixa de cor dobra a escala (2×, 4×, 8×), então muitas áreas cabem no mesmo espaço. "
+                                  "Linhas ordenadas por prioridade; a caixa tracejada é a janela atual."), className="note")],
     "quad": lambda: [dcc.Graph(id="sala-quad", config=graph_cfg)],
     "hoje": lambda: [html.Div(id="sala-hoje")],
     "temp": lambda: [html.Div(id="sala-temp-call", className="callout"), dcc.Graph(id="sala-temp", config=graph_cfg)],
@@ -82,12 +87,12 @@ BODIES = {
 
 
 def widget(wid):
-    ey, title, q = WIDGETS[wid]
+    ey, title, q = (tr(x) for x in WIDGETS[wid])
     tools = html.Div(className="ctools", children=[
-        html.Button("◀", id={"type": "sala-tool", "w": wid, "a": "left"}, n_clicks=0, title="Mover para antes"),
-        html.Button("▶", id={"type": "sala-tool", "w": wid, "a": "right"}, n_clicks=0, title="Mover para depois"),
-        html.Button("Tamanho", id={"type": "sala-tool", "w": wid, "a": "size"}, n_clicks=0, title="Mudar tamanho (S, M, L, XL)"),
-        html.Button("✕", id={"type": "sala-tool", "w": wid, "a": "hide"}, n_clicks=0, title="Ocultar")])
+        html.Button("◀", id={"type": "sala-tool", "w": wid, "a": "left"}, n_clicks=0, title=tr("Mover para antes")),
+        html.Button("▶", id={"type": "sala-tool", "w": wid, "a": "right"}, n_clicks=0, title=tr("Mover para depois")),
+        html.Button(tr("Tamanho"), id={"type": "sala-tool", "w": wid, "a": "size"}, n_clicks=0, title=tr("Mudar tamanho (S, M, L, XL)")),
+        html.Button("✕", id={"type": "sala-tool", "w": wid, "a": "hide"}, n_clicks=0, title=tr("Ocultar"))])
     return html.Section(id=f"w-{wid}", className="scard s-M", children=[
         html.Div(className="chd", children=[html.Div([html.Span(ey, className="eyebrow"), html.H3(title), html.P(q, className="q")]), tools]),
         html.Div(className="cbody", children=BODIES[wid]())])
@@ -96,37 +101,37 @@ def widget(wid):
 def sala_layout(repo: Repository) -> html.Div:
     if not (repo.ready and repo.has_daily):
         return html.Div(className="app", children=[
-            html.Header(className="top", children=[html.Div(className="brand", children=[html.H1("Sala de Situação")]), nav("sala")]),
+            html.Header(className="top", children=[html.Div(className="brand", children=[html.H1(tr("Sala de Situação"))]), nav("sala")]),
             html.Main(className="empty", children=[html.Section(className="sec", children=[
-                html.H2("Faltam os agregados diários"),
-                html.P("Os dados atuais foram processados antes dos agregados diários (dia_dep.parquet)."),
-                html.P("Peça a quem administra o sistema para reprocessar os dados.", className="note")])])])
+                html.H2(tr("Faltam os agregados diários")),
+                html.P(tr("Os dados atuais foram processados antes dos agregados diários (dia_dep.parquet).")),
+                html.P(tr("Peça a quem administra o sistema para reprocessar os dados."), className="note")])])])
     s = Sala(repo)
     d = s.daily()
     D = d["D"]
-    opts = [{"label": f"{p.nome} (província)", "value": f"prov:{p.id}"} for p in repo.geo.provincias.values()]
+    opts = [{"label": tr("{n} (província)", n=p.nome), "value": f"prov:{p.id}"} for p in repo.geo.provincias.values()]
     opts += [{"label": f"{u.nome} ({repo.geo.provincias[u.parent].nome})", "value": f"dep:{u.id}"} for u in repo.geo.departamentos.values() if u.parent in repo.geo.provincias]
     return html.Div(className="app sala", children=[
         dcc.Store(id="sala-st", data={"win": 7, "kind": "ar", "uid": "", "shape": [], "hl": None, "sort": ["score", -1]}),
         dcc.Store(id="sala-layout", storage_type="local", data={"preset": "coord", "layout": PRESETS["coord"]}),
         dcc.Store(id="sala-edit", data=False), dcc.Store(id="sala-tool-sync"),
         html.Header(className="top", children=[
-            html.Div(className="brand", children=[html.H1("Sala de Situação · Focos de Calor"),
-                                                   html.Small(f"Argentina · último dia com dados: {D:%d/%m/%Y}")]),
-            html.Span([html.I(className="livedot"), "NRT"], className="live", title="Os dias mais recentes vêm do NASA FIRMS em tempo quase real"),
+            html.Div(className="brand", children=[html.H1(tr("Sala de Situação · Focos de Calor")),
+                                                   html.Small(tr("Argentina · último dia com dados: {d}", d=f"{D:%d/%m/%Y}"))]),
+            html.Span([html.I(className="livedot"), "NRT"], className="live", title=tr("Os dias mais recentes vêm do NASA FIRMS em tempo quase real")),
             nav("sala"),
             html.Div(className="controls", children=[
-                dcc.Dropdown(id="sala-search", options=sorted(opts, key=lambda o: o["label"]), placeholder="Província ou departamento", className="search sm"),
-                html.Span("Janela", className="note"),
-                dcc.RadioItems(id="sala-win", options=[{"label": v, "value": k} for k, v in WIN_L.items()], value=7, className="seg", inline=True),
-                html.Span("Painel", className="note"),
-                dcc.Dropdown(id="sala-preset", options=[{"label": v, "value": k} for k, v in PRESET_L.items()] + [{"label": "Personalizado", "value": "custom", "disabled": True}],
+                dcc.Dropdown(id="sala-search", options=sorted(opts, key=lambda o: o["label"]), placeholder=tr("Província ou departamento"), className="search sm"),
+                html.Span(tr("Janela"), className="note"),
+                dcc.RadioItems(id="sala-win", options=[{"label": tr(v), "value": k} for k, v in WIN_L.items()], value=7, className="seg", inline=True),
+                html.Span(tr("Painel"), className="note"),
+                dcc.Dropdown(id="sala-preset", options=[{"label": tr(v), "value": k} for k, v in PRESET_L.items()] + [{"label": tr("Personalizado"), "value": "custom", "disabled": True}],
                              value="coord", clearable=False, className="preset"),
-                html.Button("Editar painel", id="sala-editbtn", n_clicks=0, className="btn")]),
+                html.Button(tr("Editar painel"), id="sala-editbtn", n_clicks=0, className="btn")]),
         ]),
         html.Div(className="sala-body", id="sala-body", children=[
             html.Section(className="alerts", children=[
-                html.Div(className="acount", children=[html.Span("Alertas ativos", className="eyebrow"), html.Div(id="sala-acount", className="row"),
+                html.Div(className="acount", children=[html.Span(tr("Alertas ativos"), className="eyebrow"), html.Div(id="sala-acount", className="row"),
                                                        html.Span(id="sala-arule", className="note")]),
                 html.Div(id="sala-alerts", className="alist")]),
             html.Section(className="scope", children=[
@@ -135,11 +140,12 @@ def sala_layout(repo: Repository) -> html.Div:
             html.Div(id="sala-edits", className="edits"),
             html.Main(className="sgrid", children=[widget(w) for w in WIDGETS]),
             html.Footer(className="foot", children=[
-                html.Strong("Como ler"),
-                html.Span(f"Esperado = média do mesmo mês em {d['baseline'][0]}–{d['baseline'][1]}, distribuída pelos dias (mesma cobertura de satélites: S-NPP e NOAA-20). "
-                          "Status: crítico ≥ 3× o esperado com volume mínimo; alerta ≥ 2×; atenção ≥ 1,5×. Projeção da temporada por anos análogos (p10–p90). "
-                          "Os dias mais recentes vêm do NASA FIRMS em tempo quase real (NRT) e podem mudar quando sair o produto científico."),
-                html.Span("Série harmonizada: quando o time de dados entregar peso_harm, a sala passa a usá-la automaticamente.", className="note")]),
+                html.Strong(tr("Como ler")),
+                html.Span(tr("Esperado = média do mesmo mês em {a}–{b}, distribuída pelos dias (mesma cobertura de satélites: S-NPP e NOAA-20). "
+                             "Status: crítico ≥ 3× o esperado com volume mínimo; alerta ≥ 2×; atenção ≥ 1,5×. Projeção da temporada por anos análogos (p10–p90). "
+                             "Os dias mais recentes vêm do NASA FIRMS em tempo quase real (NRT) e podem mudar quando sair o produto científico.",
+                             a=d['baseline'][0], b=d['baseline'][1])),
+                html.Span(tr("Série harmonizada: quando o time de dados entregar peso_harm, a sala passa a usá-la automaticamente."), className="note")]),
         ]),
     ])
 
@@ -186,7 +192,7 @@ def register_sala(app, repo: Repository) -> None:
 
     @app.callback(Output("sala-edit", "data"), Output("sala-editbtn", "children"), Input("sala-editbtn", "n_clicks"), State("sala-edit", "data"), prevent_initial_call=True)
     def toggle_edit(n, on):
-        return not on, "Concluir edição" if not on else "Editar painel"
+        return not on, tr("Concluir edição") if not on else tr("Editar painel")
 
     @app.callback([Output(f"w-{w}", "className") for w in WIDGETS] + [Output(f"w-{w}", "style") for w in WIDGETS] +
                   [Output("sala-edits", "children"), Output("sala-body", "className")],
@@ -198,9 +204,9 @@ def register_sala(app, repo: Repository) -> None:
         sty = [{"order": pos[w][0]} if w in pos else {"display": "none"} for w in WIDGETS]
         hidden = [w for w in WIDGETS if w not in pos]
         if editing:
-            edits = [html.Span("Modo de edição: ◀ ▶ reordenam, Tamanho alterna S/M/L/XL e ✕ oculta. O layout fica salvo neste navegador."),
-                     *([html.Span("Adicionar:")] + [html.Button("+ " + WIDGETS[w][1], id={"type": "sala-add", "w": w}, n_clicks=0, className="mini") for w in hidden] if hidden else []),
-                     html.Button("Restaurar o painel", id={"type": "sala-reset", "x": 1}, n_clicks=0, className="mini")]
+            edits = [html.Span(tr("Modo de edição: ◀ ▶ reordenam, Tamanho alterna S/M/L/XL e ✕ oculta. O layout fica salvo neste navegador.")),
+                     *([html.Span(tr("Adicionar:"))] + [html.Button("+ " + tr(WIDGETS[w][1]), id={"type": "sala-add", "w": w}, n_clicks=0, className="mini") for w in hidden] if hidden else []),
+                     html.Button(tr("Restaurar o painel"), id={"type": "sala-reset", "x": 1}, n_clicks=0, className="mini")]
         else:
             edits = []
         return cls + sty + [edits, "sala-body" + (" editing" if editing else "")]
@@ -294,7 +300,7 @@ def register_sala(app, repo: Repository) -> None:
         deps_m, provs_m = s.metrics(win)
         d = s.daily()
         D = d["D"]
-        wl = WIN_L[win]
+        wl = tr(WIN_L[win])
 
         if kind == "prov":
             scope_deps = geo.deps_of.get(uid, [])
@@ -306,8 +312,8 @@ def register_sala(app, repo: Repository) -> None:
         elif kind == "shape":
             scope_deps = shape_deps(st["shape"])
             units, unit_kind = deps_m.loc[scope_deps], "dep"
-            name = f"Área desenhada · {len(scope_deps)} departamento{'s' if len(scope_deps) != 1 else ''}"
-            name = [name, html.Small(" (números somam os departamentos que a área toca)", className="note")]
+            name = tr("Área desenhada · {n} departamentos", n=len(scope_deps)) if len(scope_deps) != 1 else tr("Área desenhada · 1 departamento")
+            name = [name, html.Small(tr(" (números somam os departamentos que a área toca)"), className="note")]
             scope_row = _frame(d["A"].loc[scope_deps].sum().to_frame().T, d["E"].loc[scope_deps].sum().to_frame().T,
                                d["F"].loc[scope_deps].max().to_frame().T, win).iloc[0]
         else:
@@ -318,10 +324,10 @@ def register_sala(app, repo: Repository) -> None:
 
         al = deps_m[deps_m["status"].isin(["crit", "alert", "watch"])].sort_values("score", ascending=False)
         cnt = al["status"].value_counts()
-        acount = [html.Span([str(cnt.get(k, 0)), html.Small(lbl)], style={"color": STATUS_C[k]}) for k, lbl in (("crit", "crít."), ("alert", "alerta"), ("watch", "atenção"))]
-        alerts = [go_btn("alert", "dep", i, [html.Span(LABEL[r.status], className=f"pill {r.status}"), html.Span(f"{r.nome} · {r['sub']}", className="pl"),
-                                    html.Span([html.B(fx(r.ratio)), " o esperado · ", html.B(fmt(r.R)), f" focos em {wl} · ativo há ", html.B(str(r.pers)), " d"], className="hd")],
-                         cls=f"acard {r.status}") for i, r in al.head(14).iterrows()] or [html.Span("Nenhum departamento fora do normal nesta janela.", className="note")]
+        acount = [html.Span([str(cnt.get(k, 0)), html.Small(tr(lbl))], style={"color": STATUS_C[k]}) for k, lbl in (("crit", "crít."), ("alert", "alerta"), ("watch", "atenção"))]
+        alerts = [go_btn("alert", "dep", i, [html.Span(lab(r.status), className=f"pill {r.status}"), html.Span(f"{r.nome} · {r['sub']}", className="pl"),
+                                    html.Span([html.B(fx(r.ratio)), tr(" o esperado · "), html.B(fmt(r.R)), tr(" focos em {w} · ativo há ", w=wl), html.B(str(r.pers)), " d"], className="hd")],
+                         cls=f"acard {r.status}") for i, r in al.head(14).iterrows()] or [html.Span(tr("Nenhum departamento fora do normal nesta janela."), className="note")]
 
         crumbs = [go_btn("crumb", "ar", "", "Argentina")]
         if kind in ("prov", "dep"):
@@ -330,18 +336,20 @@ def register_sala(app, repo: Repository) -> None:
         if kind == "dep":
             crumbs += [" › ", html.Span(name, className="cur")]
         if kind == "shape":
-            crumbs += [" › ", html.Span("Área desenhada", className="cur")]
-        stat = [html.Span(LABEL[scope_row["status"]], className=f"pill {scope_row['status']}"),
-                html.Span(f"{fx(scope_row['ratio'])} o esperado para {wl} nesta época do ano", className="note")]
-        tr = scope_row["trend"]
+            crumbs += [" › ", html.Span(tr("Área desenhada"), className="cur")]
+        stat = [html.Span(lab(scope_row["status"]), className=f"pill {scope_row['status']}"),
+                html.Span(tr("{r} o esperado para {w} nesta época do ano", r=fx(scope_row['ratio']), w=wl), className="note")]
+        trd = scope_row["trend"]
         cells = s.today_cells(None if kind == "ar" else scope_deps)
         n_new = int(cells["novo"].sum()) if len(cells) else 0
-        kp = [("Focos · " + wl, fmtk(scope_row["R"]), f"{'▲' if tr > .15 else '▼' if tr < -.15 else '▶'} {'+' if tr >= 0 else ''}{fmt(min(tr, 9.99) * 100)}% vs. {wl} anteriores"),
-              ("Esperado", fmtk(scope_row["Ex"]), f"média {d['baseline'][0]}–{d['baseline'][1]}"),
-              ("Relação", fx(scope_row["ratio"]), LABEL[scope_row["status"]].lower()),
-              (f"Em {D:%d/%m}", fmt(scope_row["today"]), f"{n_new} célula{'s' if n_new != 1 else ''} nova{'s' if n_new != 1 else ''} de 0,1°"),
-              ("Persistência", f"{int(scope_row['pers'])}{'+' if scope_row['pers'] >= len(d['days']) - 1 else ''} d", "dias seguidos com focos"),
-              ("FRP máximo", f"{fmt(scope_row['frp'])} MW" if scope_row["frp"] else "—", "maior intensidade na janela")]
+        kp = [(tr("Focos · {w}", w=wl), fmtk(scope_row["R"]), tr("{a} {s}% vs. {w} anteriores", a='▲' if trd > .15 else '▼' if trd < -.15 else '▶',
+                                                                    s=f"{'+' if trd >= 0 else ''}{fmt(min(trd, 9.99) * 100)}", w=wl)),
+              (tr("Esperado"), fmtk(scope_row["Ex"]), tr("média {a}–{b}", a=d['baseline'][0], b=d['baseline'][1])),
+              (tr("Relação"), fx(scope_row["ratio"]), lab(scope_row["status"]).lower()),
+              (tr("Em {d}", d=f"{D:%d/%m}"), fmt(scope_row["today"]),
+               tr("1 célula nova de 0,1°") if n_new == 1 else tr("{n} células novas de 0,1°", n=n_new)),
+              (tr("Persistência"), f"{int(scope_row['pers'])}{'+' if scope_row['pers'] >= len(d['days']) - 1 else ''} d", tr("dias seguidos com focos")),
+              (tr("FRP máximo"), f"{fmt(scope_row['frp'])} MW" if scope_row["frp"] else "—", tr("maior intensidade na janela"))]
         kpis = [html.Div([html.Span(a, className="k"), html.Span(b, className="v"), html.Span(c, className="d")], className="kpi") for a, b, c in kp]
 
         mapfig, maplegend = sala_map(st, units, unit_kind, scope_deps, s, D, win, tool or "pan", al)
@@ -359,7 +367,7 @@ def register_sala(app, repo: Repository) -> None:
         cal.update_layout(height=470)
         harm, harm_note = F.harmonization(m, repo.has_harm)
         sat = sat_table(s.sat_status(), D)
-        return (acount, f"Crítico: ≥3× o esperado e ≥{RMIN[win]} focos em {wl}", alerts, crumbs, name, stat, kpis,
+        return (acount, tr("Crítico: ≥3× o esperado e ≥{n} focos em {w}", n=RMIN[win], w=wl), alerts, crumbs, name, stat, kpis,
                 mapfig, maplegend, tri_el, strip, hleg, quad, hoje, temp, call, clock, clock_call, cal, harm,
                 dcc.Markdown(harm_note, dangerously_allow_html=True), sat)
 
@@ -374,7 +382,7 @@ def register_sala(app, repo: Repository) -> None:
     # ------------------------------------------------------------------ map
     def dep_label(dep_id):
         d = geo.departamentos.get(dep_id)
-        return f"{d.nome} · {geo.provincias[d.parent].nome}" if d and d.parent in geo.provincias else ""
+        return f"{d.nome} · {geo.provincias[d.parent].nome}" if d and d.parent in geo.provincias else ""  # proper names
 
     def sala_map(st, units, unit_kind, scope_deps, s: Sala, D, win, tool, alert_deps):
         kind, uid = st["kind"], st["uid"]
@@ -387,13 +395,13 @@ def register_sala(app, repo: Repository) -> None:
             pids = list(geo.provincias)
             traces.append(go.Choroplethmap(geojson=geo.fc["prov"], locations=pids, z=[0] * len(pids), featureidkey="id", colorscale=grey, showscale=False,
                                            marker_opacity=0.6, marker_line_width=0.8, customdata=[["prov", p, geo.provincias[p].nome] for p in pids],
-                                           hovertemplate="%{customdata[2]}<br><i>clique para focar</i><extra></extra>"))
+                                           hovertemplate="%{customdata[2]}" + tr("<br><i>clique para focar</i>") + "<extra></extra>"))
             fc = geo.subset("dep", units.index)
         else:
             fc = geo.fc["prov"]
         def hover(r):
-            return (f"<b>{r.nome}</b><br>{LABEL[r.status]} · {fx(r.ratio)} o esperado<br>{fmt(r.R)} focos (esperado {fmt1(r.Ex)})<br>"
-                    f"Último dia: {fmt(r.today)} · ativo há {r.pers} d<br><i>clique para focar</i>")
+            return tr("<b>{n}</b><br>{s} · {r} o esperado<br>{R} focos (esperado {E})<br>Último dia: {t} · ativo há {p} d<br><i>clique para focar</i>",
+                      n=r.nome, s=lab(r.status), r=fx(r.ratio), R=fmt(r.R), E=fmt1(r.Ex), t=fmt(r.today), p=r.pers)
         z = [ratio_class(r.ratio, r.R, r.Ex) for r in units.itertuples()]
         cd = [[unit_kind, i, hover(r)] for i, r in units.iterrows()]
         traces.append(go.Choroplethmap(geojson=fc, locations=list(units.index), z=z, zmin=0, zmax=6, featureidkey="id",
@@ -419,8 +427,8 @@ def register_sala(app, repo: Repository) -> None:
                     traces.append(go.Scattermap(lat=g["lat"], lon=g["lon"], mode="markers", marker=dict(size=size, color=color, opacity=0.85),
                                                 customdata=np.stack([["pt"] * len(g), g["dep_id"].fillna(""), g["ts"].dt.strftime("%d/%m/%Y %H:%M"),
                                                                      g["satelite"], g["frp"].round(1), where], 1),
-                                                hovertemplate="<b>Foco · %{customdata[3]}</b><br>%{customdata[5]}<br>%{customdata[2]} UTC · FRP %{customdata[4]} MW"
-                                                              "<br><i>clique para focar</i><extra></extra>"))
+                                                hovertemplate=tr("<b>Foco · %{customdata[3]}</b><br>%{customdata[5]}<br>%{customdata[2]} UTC · FRP %{customdata[4]} MW"
+                                                                 "<br><i>clique para focar</i>") + "<extra></extra>"))
         layers = []
         if kind in ("prov", "dep"):
             u = geo.unit(kind, uid)
@@ -447,17 +455,17 @@ def register_sala(app, repo: Repository) -> None:
         fig = go.Figure(traces)
         fig.update_layout(map=dict(style="carto-positron", center=center, zoom=zoom, layers=layers), margin=dict(l=0, r=0, t=0, b=0),
                           height=430, showlegend=False, uirevision=f"{kind}:{uid}:{st.get('hl')}:{len(st['shape'])}", dragmode=tool,
-                          hoverlabel=dict(bgcolor=F.FG, font_color="#fff"), clickmode="event")
-        legend = [html.Div("Focos na janela vs. esperado", className="note"),
-                  html.Div([html.Span([html.I(style={"background": c}), lab]) for c, lab in zip(CLS_C, CLS_L)], className="mlr"),
-                  html.Div(([html.Span([html.I(className="dot", style={"background": F.ACCENT}), f"focos da janela ({WIN_L[win]})"])] if not only_today else []) +
-                           [html.Span([html.I(className="dot", style={"background": "#111"}), f"focos em {D:%d/%m}"])] +
-                           ([html.Span("províncias coloridas; por cima, os departamentos em alerta")] if kind == "ar" else []), className="legend")]
+                          hoverlabel=dict(bgcolor=F.FG, font_color="#fff"), clickmode="event", separators=F.separators())
+        legend = [html.Div(tr("Focos na janela vs. esperado"), className="note"),
+                  html.Div([html.Span([html.I(style={"background": c}), tr(t)]) for c, t in zip(CLS_C, CLS_L)], className="mlr"),
+                  html.Div(([html.Span([html.I(className="dot", style={"background": F.ACCENT}), tr("focos da janela ({w})", w=tr(WIN_L[win]))])] if not only_today else []) +
+                           [html.Span([html.I(className="dot", style={"background": "#111"}), tr("focos em {d}", d=f"{D:%d/%m}")])] +
+                           ([html.Span(tr("províncias coloridas; por cima, os departamentos em alerta"))] if kind == "ar" else []), className="legend")]
         return fig, legend
 
     # ------------------------------------------------------------------ priority queue (sortable)
     COLS = [("score", "Status"), ("nome", "Lugar"), ("R", "Focos"), ("Ex", "Esperado"), ("ratio", "× normal"), ("trend", "Tendência"),
-            ("pers", "Dias ativos"), ("frp", "FRP máx."), (None, "Últimos 30 dias")]
+            ("pers", "Dias ativos"), ("frp", "FRP máx."), (None, "Últimos 30 dias")]  # tr() at use
 
     def triage(rows: pd.DataFrame, sort_k, sort_dir, kind, uid, d, win):
         rows = rows[(rows["R"] > 0) | (rows["status"] != "ok")]
@@ -466,8 +474,8 @@ def register_sala(app, repo: Repository) -> None:
         else:
             rows = rows.sort_values(sort_k, ascending=sort_dir > 0)
         rows = rows.head(12)
-        head = html.Tr([html.Th(html.Button([lbl, (" ↓" if sort_dir < 0 else " ↑") if k == sort_k else ""], id={"type": "sala-sort", "k": k},
-                                            n_clicks=0, className="thbtn") if k else lbl) for k, lbl in COLS])
+        head = html.Tr([html.Th(html.Button([tr(lbl), (" ↓" if sort_dir < 0 else " ↑") if k == sort_k else ""], id={"type": "sala-sort", "k": k},
+                                            n_clicks=0, className="thbtn") if k else tr(lbl)) for k, lbl in COLS])
         A, E = d["A"], d["E"]
         body = []
         for i, r in rows.iterrows():
@@ -477,13 +485,13 @@ def register_sala(app, repo: Repository) -> None:
             mx = max(a30.max(), E.loc[i].to_numpy()[-30:].max(), 1)
             bars = [html.I(style={"height": f"{max(1, v / mx * 22):.0f}px", "background": "var(--accent)" if k >= 30 - win else "#c9cfd6"}) for k, v in enumerate(a30)]
             body.append(html.Tr(className="trow" + (" sel" if kind == "dep" and uid == i else ""), children=[
-                html.Td(html.Span(LABEL[r.status], className=f"pill {r.status}")),
+                html.Td(html.Span(lab(r.status), className=f"pill {r.status}")),
                 html.Td(go_btn("tri", "dep", i, [r.nome, html.Small(r['sub'])], cls="plbtn")),
                 html.Td(fmt(r.R), className="num"), html.Td(fmt1(r.Ex), className="num"), html.Td(html.B(fx(r.ratio)), className="num"),
                 html.Td(f"{arrow} {'+' if t >= 0 else ''}{fmt(min(t, 9.99) * 100)}%", className=f"trend {cls}"),
                 html.Td(str(r.pers), className="num"), html.Td(fmt(r.frp) if r.frp else "—", className="num"),
                 html.Td(html.Span(bars, className="spark"))]))
-        return html.Table([html.Thead(head), html.Tbody(body)], className="tri") if body else html.P("Sem focos nesta área.", className="note")
+        return html.Table([html.Thead(head), html.Tbody(body)], className="tri") if body else html.P(tr("Sem focos nesta área."), className="note")
 
     # ------------------------------------------------------------------ horizon chart (each colour band doubles the scale)
     def horizon(units: pd.DataFrame, unit_kind, d, win):
@@ -503,7 +511,8 @@ def register_sala(app, repo: Repository) -> None:
             base = rows - 1 - r_i
             nome = units.loc[u, "nome"]
             for k, dd in enumerate(days):
-                txt = f"<b>{nome}</b> · {dd:%d/%m}<br>{fmt(A.loc[u].iloc[-n + k])} focos (esperado {fmt1(E.loc[u].iloc[-n + k])})<br>3 dias: {fx(2 ** row[k])} o esperado"
+                txt = tr("<b>{n}</b> · {d}<br>{a} focos (esperado {e})<br>3 dias: {r} o esperado", n=nome, d=f"{dd:%d/%m}",
+                         a=fmt(A.loc[u].iloc[-n + k]), e=fmt1(E.loc[u].iloc[-n + k]), r=fx(2 ** row[k]))
                 bands = [(np.clip(row[k] - b, 0, 1), c) for b, c in enumerate(up)] + [(np.clip(-row[k] - b, 0, 1), c) for b, c in enumerate(dn)]
                 xs.append(dd); bases.append(base); heights.append(0.9); colors.append("#f1f2f4"); hover.append(txt); custom.append([unit_kind, u])
                 for h, c in bands:
@@ -517,9 +526,9 @@ def register_sala(app, repo: Repository) -> None:
                          tickfont=dict(family="IBM Plex Sans", size=11, color=F.FG))
         fig.update_layout(margin=dict(l=190, r=10, t=6, b=24))
         fig.add_vrect(x0=days[-win] - pd.Timedelta(hours=12), x1=days[-1] + pd.Timedelta(hours=12), line=dict(color=F.FG, width=1.5, dash="dot"), fillcolor="rgba(0,0,0,0)")
-        legend = [html.Span("abaixo do esperado"), *[html.I(className="sw", style={"background": c}) for c in reversed(dn)],
+        legend = [html.Span(tr("abaixo do esperado")), *[html.I(className="sw", style={"background": c}) for c in reversed(dn)],
                   html.I(className="sw", style={"background": "#f1f2f4", "outline": "1px solid #d9dde2"}),
-                  *[html.I(className="sw", style={"background": c}) for c in up], html.Span("2×, 4×, 8× acima")]
+                  *[html.I(className="sw", style={"background": c}) for c in up], html.Span(tr("2×, 4×, 8× acima"))]
         return fig, legend
 
     # ------------------------------------------------------------------ quadrant
@@ -533,7 +542,7 @@ def register_sala(app, repo: Repository) -> None:
         fig.add_shape(type="rect", x0=1, x1=4.2, y0=yl, y1=ymax, fillcolor="rgba(180,35,24,.08)", line_width=0)
         for xx, yy, t, c, anc in ((4.1, ymax * .97, "AGIR AGORA", "#b42318", "right"), (-1.9, ymax * .97, "VOLUME ALTO, NORMAL", F.MUTED, "left"),
                                   (4.1, 0.03, "SURTO INICIAL", "#c96a00", "right"), (-1.9, 0.03, "NORMAL", F.MUTED, "left")):
-            fig.add_annotation(x=xx, y=yy, text=t, showarrow=False, xanchor=anc, yanchor="top" if yy > 0.1 else "bottom", font=dict(size=9.5, color=c))
+            fig.add_annotation(x=xx, y=yy, text=tr(t), showarrow=False, xanchor=anc, yanchor="top" if yy > 0.1 else "bottom", font=dict(size=9.5, color=c))
         fig.add_vline(x=1, line=dict(color="#b42318", dash="dash", width=1))
         fig.add_hline(y=yl, line=dict(color="#b42318", dash="dash", width=1))
         top = set(u.sort_values("score", ascending=False).query("status != 'ok'").head(5).index)
@@ -543,30 +552,31 @@ def register_sala(app, repo: Repository) -> None:
                                  marker=dict(size=[7 + np.sqrt(p + 1) * 2.2 for p in u["pers"]], color=[STATUS_C[s_] for s_ in u["status"]],
                                              opacity=[0.45 if s_ == "ok" else 0.85 for s_ in u["status"]],
                                              line=dict(color=["#111" if sel(i) else "#fff" for i in u.index], width=[2.5 if sel(i) else 1 for i in u.index])),
-                                 customdata=[[unit_kind, i, f"<b>{r.nome}</b><br>{LABEL[r.status]} · {fx(r.ratio)} o esperado<br>{fmt(r.R)} focos · ativo há {r.pers} d"] for i, r in u.iterrows()],
+                                 customdata=[[unit_kind, i, tr("<b>{n}</b><br>{s} · {r} o esperado<br>{R} focos · ativo há {p} d", n=r.nome, s=lab(r.status), r=fx(r.ratio), R=fmt(r.R), p=r.pers)]
+                                             for i, r in u.iterrows()],
                                  hovertemplate="%{customdata[2]}<extra></extra>"))
         F.base_layout(fig, 340)
-        fig.update_xaxes(range=[-2.1, 4.2], tickvals=[-2, -1, 0, 1, 2, 3, 4], ticktext=["¼×", "½×", "1×", "2×", "4×", "8×", "16×"], title=dict(text="quantas vezes o esperado", font=dict(size=10)))
-        fig.update_yaxes(range=[0, ymax], tickvals=[0, 1, 2, 3, 4], ticktext=["0", "9", "99", "999", "9.999"], title=dict(text="focos (escala log)", font=dict(size=10)))
+        fig.update_xaxes(range=[-2.1, 4.2], tickvals=[-2, -1, 0, 1, 2, 3, 4], ticktext=["¼×", "½×", "1×", "2×", "4×", "8×", "16×"], title=dict(text=tr("quantas vezes o esperado"), font=dict(size=10)))
+        fig.update_yaxes(range=[0, ymax], tickvals=[0, 1, 2, 3, 4], ticktext=["0", "9", "99", "999", fmt(9999)], title=dict(text=tr("focos (escala log)"), font=dict(size=10)))
         fig.update_layout(margin=dict(l=50, r=10, t=8, b=40))
         return fig
 
     # ------------------------------------------------------------------ today's hotspots
     def today_list(cells: pd.DataFrame, D):
         if cells is None or not len(cells):
-            return html.P(f"Nenhum foco em {D:%d/%m/%Y} nesta área.", className="note")
+            return html.P(tr("Nenhum foco em {d} nesta área.", d=f"{D:%d/%m/%Y}"), className="note")
         tot, new = int(cells["n"].sum()), int(cells["novo"].sum())
         items = []
         for r in cells.head(8).itertuples():
             dep = geo.departamentos.get(r.dep_id)
             items.append(html.Li(go_btn("hoje", "dep", r.dep_id, [
-                html.Span([str(r.n), html.Small("focos")], className="n"),
+                html.Span([str(r.n), html.Small(tr("focos"))], className="n"),
                 html.Span([html.B(dep.nome if dep else "—"), html.Span(f"{geo.provincias[dep.parent].nome if dep else ''} · {abs(r.lat):.2f}°S {abs(r.lon):.2f}°W")], className="w"),
-                html.Span([html.Span("NOVO", className="new") if r.novo else None, html.Span(f"{pd.Timestamp(r.ultimo):%H:%M} UTC"),
+                html.Span([html.Span(tr("NOVO"), className="new") if r.novo else None, html.Span(f"{pd.Timestamp(r.ultimo):%H:%M} UTC"),
                            html.Span([html.I(style={"background": F.SAT_C.get(x, '#888')}, title=x) for x in r.sats], className="sats")], className="r")],
                 cls="feedbtn", hl=f"{r.gx},{r.gy},0.1")))
-        return [html.Div([html.B(fmt(tot)), f" focos em {D:%d/%m} em ", html.B(str(len(cells))), " células de 0,1° · ", html.B(str(new)),
-                          " sem focos nos 7 dias anteriores. Clique para ver a célula no mapa."], className="callout"), html.Ul(items, className="feed")]
+        return [html.Div([html.B(fmt(tot)), tr(" focos em {d} em ", d=f"{D:%d/%m}"), html.B(str(len(cells))), tr(" células de 0,1° · "), html.B(str(new)),
+                          tr(" sem focos nos 7 dias anteriores. Clique para ver a célula no mapa.")], className="callout"), html.Ul(items, className="feed")]
 
     # ------------------------------------------------------------------ season: cumulative + projection, and season clock
     def season_fig(v: pd.Series, D):
@@ -575,32 +585,33 @@ def register_sala(app, repo: Repository) -> None:
         cum = lambda y: np.cumsum([v.get(y * 12 + k, 0.0) for k in range(12)])  # noqa: E731
         hist = np.array([cum(y) for y in range(max(2012, repo.y0 + 1), Y)])
         cur = cum(Y)[:max(last, 1)]
+        MS = months()
         mn, mx_, p25, p50, p75 = hist.min(0), hist.max(0), *np.quantile(hist, [0.25, 0.5, 0.75], 0)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=MESES, y=mx_, mode="lines", line_width=0, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=MESES, y=mn, mode="lines", fill="tonexty", fillcolor="rgba(91,101,112,.13)", line_width=0, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=MESES, y=p75, mode="lines", line_width=0, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=MESES, y=p25, mode="lines", fill="tonexty", fillcolor=F.ACCENT_SOFT, line_width=0, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=MESES, y=p50, mode="lines", line=dict(color=F.MUTED, dash="dash", width=1.4), hovertemplate="mediana %{y:,.0f}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=MS, y=mx_, mode="lines", line_width=0, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=MS, y=mn, mode="lines", fill="tonexty", fillcolor="rgba(91,101,112,.13)", line_width=0, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=MS, y=p75, mode="lines", line_width=0, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=MS, y=p25, mode="lines", fill="tonexty", fillcolor=F.ACCENT_SOFT, line_width=0, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=MS, y=p50, mode="lines", line=dict(color=F.MUTED, dash="dash", width=1.4), hovertemplate=tr("mediana %{y:,.0f}") + "<extra></extra>"))
         call = ""
         if last >= 1:
             li = last - 1
             proj = ""
             if last < 12:
                 ratio = lambda j, q: np.quantile(hist[:, j] / np.maximum(hist[:, li], 1), q)  # noqa: E731
-                xs = MESES[li:]
+                xs = MS[li:]
                 lo, md, hi = ([cur[li] * ratio(j, q) for j in range(li, 12)] for q in (0.1, 0.5, 0.9))
                 fig.add_trace(go.Scatter(x=xs, y=hi, mode="lines", line=dict(color=F.ACCENT, width=1, dash="dot"), hoverinfo="skip"))
                 fig.add_trace(go.Scatter(x=xs, y=lo, mode="lines", fill="tonexty", fillcolor="rgba(194,65,12,.10)", line=dict(color=F.ACCENT, width=1, dash="dot"), hoverinfo="skip"))
-                fig.add_trace(go.Scatter(x=xs, y=md, mode="lines", line=dict(color=F.ACCENT, width=2, dash="dash"), hovertemplate="projeção %{y:,.0f}<extra></extra>"))
-                proj = f" Projeção para dezembro: <b>{fmt(md[-1])}</b> (faixa {fmt(lo[-1])}–{fmt(hi[-1])}, anos análogos)."
-            fig.add_trace(go.Scatter(x=MESES[:last], y=cur[:last], mode="lines+markers", line=dict(color=F.ACCENT, width=3), marker=dict(size=6),
-                                     hovertemplate=f"{Y} até %{{x}}: %{{y:,.0f}}<extra></extra>"))
+                fig.add_trace(go.Scatter(x=xs, y=md, mode="lines", line=dict(color=F.ACCENT, width=2, dash="dash"), hovertemplate=tr("projeção %{y:,.0f}") + "<extra></extra>"))
+                proj = tr(" Projeção para dezembro: <b>{m}</b> (faixa {a}–{b}, anos análogos).", m=fmt(md[-1]), a=fmt(lo[-1]), b=fmt(hi[-1]))
+            fig.add_trace(go.Scatter(x=MS[:last], y=cur[:last], mode="lines+markers", line=dict(color=F.ACCENT, width=3), marker=dict(size=6),
+                                     hovertemplate=tr("{y} até %{{x}}: %{{y:,.0f}}", y=Y) + "<extra></extra>"))
             at = hist[:, li]
             rank = int((at > cur[li]).sum()) + 1
             dd = (cur[li] - p50[li]) / p50[li] * 100 if p50[li] else 0
-            call = (f"<b>{Y}</b> até {MESES_L[li]}: <b>{fmt(cur[li])}</b> focos, {'+' if dd >= 0 else ''}{fmt(dd)}% contra a mediana, "
-                    f"<b>{rank}º</b> maior de {len(at) + 1} anos.{proj}")
+            call = tr("<b>{y}</b> até {m}: <b>{n}</b> focos, {d}% contra a mediana, <b>{r}</b> maior de {t} anos.",
+                      y=Y, m=months_long()[li], n=fmt(cur[li]), d=f"{'+' if dd >= 0 else ''}{fmt(dd)}", r=ordinal(rank), t=len(at) + 1) + proj
         F.base_layout(fig, 260)
         return fig, dcc.Markdown(call, dangerously_allow_html=True)
 
@@ -612,30 +623,32 @@ def register_sala(app, repo: Repository) -> None:
         pk = int(np.argmax(med))
         cm = D.month - 1
         share = med[cm] / med[pk] if med[pk] else 0
-        phase = "Pico da temporada" if share >= .7 else "Fora de temporada" if share < .2 else ("Temporada subindo" if med[(cm + 1) % 12] > med[cm] else "Temporada descendo")
+        phase = tr("Pico da temporada" if share >= .7 else "Fora de temporada" if share < .2 else ("Temporada subindo" if med[(cm + 1) % 12] > med[cm] else "Temporada descendo"))
+        ML = months_long()
         fig = go.Figure()
         fig.add_trace(go.Barpolar(r=med, theta=theta, width=[26] * 12, marker_color="rgba(91,101,112,.25)", marker_line_color="#c9cfd6",
-                                  customdata=MESES_L, hovertemplate="<b>%{customdata}</b><br>mediana: %{r:,.0f} focos<extra></extra>"))
+                                  customdata=ML, hovertemplate=tr("<b>%{customdata}</b><br>mediana: %{r:,.0f} focos") + "<extra></extra>"))
         fig.add_trace(go.Barpolar(r=cur, theta=theta, width=[11] * 12,
                                   marker_color=["#b42318" if (c is not None and c > m * 1.5) else F.ACCENT for c, m in zip(cur, med)],
-                                  customdata=MESES_L, hovertemplate=f"<b>%{{customdata}} de {Y}</b><br>%{{r:,.0f}} focos<extra></extra>"))
+                                  customdata=ML, hovertemplate=tr("<b>%{{customdata}} de {y}</b><br>%{{r:,.0f}} focos", y=Y) + "<extra></extra>"))
         ang = (cm + (D.day - 1) / 31) * 30
         rmax = max(max(med), max([c for c in cur if c is not None] or [0])) * 1.05 or 1
         fig.add_trace(go.Scatterpolar(r=[0, rmax], theta=[ang, ang], mode="lines", line=dict(color=F.FG, width=2.5), hoverinfo="skip"))
         fig.update_layout(height=320, margin=dict(l=30, r=30, t=20, b=20), paper_bgcolor="#fff", showlegend=False, font=F.FONT,
-                          polar=dict(bgcolor="#fff", angularaxis=dict(direction="clockwise", rotation=90, tickvals=theta, ticktext=MESES, gridcolor="#eceef1"),
+                          polar=dict(bgcolor="#fff", angularaxis=dict(direction="clockwise", rotation=90, tickvals=theta, ticktext=months(), gridcolor="#eceef1"),
                                      radialaxis=dict(showticklabels=False, gridcolor="#eceef1", range=[0, rmax])),
-                          hoverlabel=dict(bgcolor=F.FG, font_color="#fff"))
-        call = html.Span([html.B(phase), f". Pico típico em {MESES_L[pk]}. {MESES[cm]} costuma ter {fmt(share * 100)}% do volume do mês de pico. "
-                                         f"A linha preta marca {D:%d/%m}; barras laranja são {Y}, vermelhas quando passam de 1,5× a mediana."])
+                          hoverlabel=dict(bgcolor=F.FG, font_color="#fff"), separators=F.separators())
+        call = html.Span([html.B(phase), tr(". Pico típico em {p}. {m} costuma ter {s}% do volume do mês de pico. "
+                                            "A linha preta marca {d}; barras laranja são {y}, vermelhas quando passam de 1,5× a mediana.",
+                                            p=ML[pk], m=months()[cm], s=fmt(share * 100), d=f"{D:%d/%m}", y=Y)])
         return fig, call
 
     def sat_table(df: pd.DataFrame, D):
         if df.empty:
-            return html.P("Sem detecções nos últimos 30 dias.", className="note")
+            return html.P(tr("Sem detecções nos últimos 30 dias."), className="note")
         rows = [html.Tr([html.Td(html.I(className="dot", style={"background": F.SAT_C.get(r.satelite, "#888")})), html.Td(r.satelite),
                          html.Td(f"{pd.Timestamp(r.ultimo):%d/%m %H:%M} UTC", className="num"), html.Td(fmt(r.hoje), className="num")]) for r in df.itertuples()]
         missing = [s_ for s_ in ("TERRA", "AQUA", "SNPP", "NOAA20", "NOAA21") if s_ not in set(df["satelite"])]
-        return [html.Table([html.Thead(html.Tr([html.Th(""), html.Th("Satélite"), html.Th("Última detecção"), html.Th(f"Em {D:%d/%m}")])), html.Tbody(rows)], className="tri"),
-                html.P(("Sem dados recentes de: " + ", ".join(missing) + ". ") if missing else "", className="note"),
-                html.P("A entrega do S-NPP foi encerrada em 01/11/2026; NOAA-20 e NOAA-21 seguem cobrindo o VIIRS.", className="note")]
+        return [html.Table([html.Thead(html.Tr([html.Th(""), html.Th(tr("Satélite")), html.Th(tr("Última detecção")), html.Th(tr("Em {d}", d=f"{D:%d/%m}"))])), html.Tbody(rows)], className="tri"),
+                html.P(tr("Sem dados recentes de: {s}. ", s=", ".join(missing)) if missing else "", className="note"),
+                html.P(tr("A entrega do S-NPP foi encerrada em 01/11/2026; NOAA-20 e NOAA-21 seguem cobrindo o VIIRS."), className="note")]

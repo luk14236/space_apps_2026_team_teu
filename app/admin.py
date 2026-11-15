@@ -26,6 +26,7 @@ from pathlib import Path
 from flask import Blueprint, Response, abort, jsonify, redirect, request, session
 
 from . import config
+from .i18n import tr
 from .admin_page import page_html, shell
 from .pipeline import entregas, firms, prepare, publish
 
@@ -103,7 +104,7 @@ def create_blueprint(get_repo) -> Blueprint:
             abort(403)
         tok = request.headers.get("X-CSRF") or request.form.get("csrf")
         if not tok or tok != session.get("csrf"):
-            abort(400, "Sessão expirada. Recarregue a página.")
+            abort(400, tr("Sessão expirada. Recarregue a página."))
 
     # ---------------------------------------------------------------- versions log
     def versions() -> list[dict]:
@@ -182,7 +183,7 @@ def create_blueprint(get_repo) -> Blueprint:
     @bp.route("/admin", methods=["GET"])
     def page():
         if not configured():
-            return Response(shell("Admin desativado", "<main class=narrow><section><h2>Admin desativado</h2><p>Defina ADMIN_USER e ADMIN_PASSWORD no servidor.</p></section></main>"),
+            return Response(shell(tr("Admin desativado"), f"<main class=narrow><section><h2>{tr('Admin desativado')}</h2><p>{tr('Defina ADMIN_USER e ADMIN_PASSWORD no servidor.')}</p></section></main>"),
                             403, mimetype="text/html")
         if not allowed():
             return Response(login_html(csrf(), request.args.get("erro")), mimetype="text/html")
@@ -219,13 +220,13 @@ def create_blueprint(get_repo) -> Blueprint:
             mode="online" if config.ON_SPACE else "local",
             live=live, candidate=cand, candidate_diff=diff(live, cand) if cand else None, prev=old,
             entregas=entregas.all_entregas(), inbox=entregas.inbox_files(), inbox_path=str(entregas.inbox()),
-            versions=versions()[:10], job={**jobs.state, "log": list(jobs.log)[-200:]},
+            versions=versions()[:10], job={**jobs.state, "stage": tr_stage(jobs.state.get("stage") or ""), "log": list(jobs.log)[-200:]},
             firms={"key": bool(config.FIRMS_MAP_KEY), "start": min(last + timedelta(days=1), date.today()).isoformat(), "end": date.today().isoformat()},
-            publish={"available": ok_pub, "reason": why, "space": config.HF_SPACE, "site": config.SITE_URL, "history": publish.history()[:5]},
+            publish={"available": ok_pub, "reason": tr(why) if why else why, "space": config.HF_SPACE, "site": config.SITE_URL, "history": publish.history()[:5]},
         )
 
     def busy():
-        return jsonify(ok=False, msg="Já existe uma tarefa em andamento."), 409
+        return jsonify(ok=False, msg=tr("Já existe uma tarefa em andamento.")), 409
 
     @bp.route("/admin/upload", methods=["POST"])
     def upload():
@@ -284,28 +285,28 @@ def create_blueprint(get_repo) -> Blueprint:
         if action == "import_url":
             url = str(body.get("url", "")).strip()
             if not re.match(r"^https?://", url):
-                return jsonify(ok=False, msg="Cole um link que comece com http:// ou https://."), 400
+                return jsonify(ok=False, msg=tr("Cole um link que comece com http:// ou https://.")), 400
             return jsonify(ok=jobs.start("link", import_url(url, bool(body.get("process")))))
         if action == "inspect":
             return jsonify(ok=jobs.start("conferir", lambda job: entregas.inspect_all(job.add, job.progress)))
         if action == "process":
             if not entregas.active_files()[0]:
-                return jsonify(ok=False, msg="Nenhuma entrega ativa com focos_brutos."), 400
+                return jsonify(ok=False, msg=tr("Nenhuma entrega ativa com focos_brutos.")), 400
             return jsonify(ok=jobs.start("processar", process))
         if action == "firms":
             try:
                 start, end = date.fromisoformat(body["start"]), date.fromisoformat(body["end"])
             except (KeyError, ValueError):
-                return jsonify(ok=False, msg="Datas inválidas."), 400
+                return jsonify(ok=False, msg=tr("Datas inválidas.")), 400
             if end < start:
-                return jsonify(ok=False, msg="A data final é anterior à inicial."), 400
+                return jsonify(ok=False, msg=tr("A data final é anterior à inicial.")), 400
             if not config.FIRMS_MAP_KEY:
-                return jsonify(ok=False, msg="Defina FIRMS_MAP_KEY no servidor."), 400
+                return jsonify(ok=False, msg=tr("Defina FIRMS_MAP_KEY no servidor.")), 400
             return jsonify(ok=jobs.start("firms", pull_firms(start, end, bool(body.get("process")))))
         if action == "apply":
             meta = read_meta(nxt)
             if not meta:
-                return jsonify(ok=False, msg="Não há versão nova para aplicar."), 400
+                return jsonify(ok=False, msg=tr("Não há versão nova para aplicar.")), 400
             shutil.rmtree(prev, ignore_errors=True)
             if config.PROCESSED_DIR.exists():
                 config.PROCESSED_DIR.rename(prev)
@@ -319,7 +320,7 @@ def create_blueprint(get_repo) -> Blueprint:
         if action == "rollback":
             meta = read_meta(prev)
             if not meta:
-                return jsonify(ok=False, msg="Não há versão anterior."), 400
+                return jsonify(ok=False, msg=tr("Não há versão anterior.")), 400
             tmp = config.DATA_DIR / "processed_swap"
             shutil.rmtree(tmp, ignore_errors=True)
             config.PROCESSED_DIR.rename(tmp)
@@ -338,10 +339,19 @@ def create_blueprint(get_repo) -> Blueprint:
     return bp
 
 
+def tr_stage(stage: str) -> str:
+    """Job stages are written in Portuguese by the background thread; translate them when the page asks."""
+    for pre in ("Importando ", "Baixando do FIRMS "):
+        if stage.startswith(pre):
+            return tr(pre.strip()) + " " + stage[len(pre):]
+    return tr(stage) if stage else stage
+
+
 def login_html(tok: str, erro=None) -> str:
-    msg = "<p class=warn>Usuário ou senha incorretos.</p>" if erro else ""
-    return shell("Admin", f"""<main class=narrow><section><h2>Entrar no admin</h2>{msg}
+    from .admin_page import lang_switch
+    msg = f"<p class=warn>{tr('Usuário ou senha incorretos.')}</p>" if erro else ""
+    return shell("Admin", f"""<main class=narrow><section><div class=sh><h2>{tr("Entrar no admin")}</h2>{lang_switch("/admin")}</div>{msg}
 <form method=post action=/admin/login class=login><input type=hidden name=csrf value={html.escape(tok)}>
-<label>Usuário <input name=usuario autocomplete=username autofocus required></label>
-<label>Senha <input type=password name=senha autocomplete=current-password required></label>
-<button class=primary>Entrar</button></form></section></main>""")
+<label>{tr("Usuário")} <input name=usuario autocomplete=username autofocus required></label>
+<label>{tr("Senha")} <input type=password name=senha autocomplete=current-password required></label>
+<button class=primary>{tr("Entrar")}</button></form></section></main>""")

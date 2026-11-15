@@ -8,8 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-MESES_L = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+from ..i18n import lang, months, months_long, num, ordinal, tr
 
 FG, MUTED, LINE, SURF = "#1a1f25", "#5b6570", "#d9dde2", "#ffffff"
 ACCENT, ACCENT_SOFT = "#c2410c", "rgba(194,65,12,.18)"
@@ -22,21 +21,26 @@ FONT = dict(family="IBM Plex Sans, system-ui, sans-serif", size=11, color=MUTED)
 
 
 def fmt(n) -> str:
-    return f"{n:,.0f}".replace(",", ".")
+    return num(n)
 
 
 def fmt1(n) -> str:
-    return f"{n:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return num(n, 1)
 
 
 def fmtk(n) -> str:
     return fmt(n / 1000) + "k" if n >= 10000 else (fmt1(n / 1000) + "k" if n >= 1000 else fmt(n))
 
 
+def separators() -> str:
+    """Decimal and thousands separators for numbers inside Plotly hovers and axes."""
+    return ".," if lang() == "en" else ",."
+
+
 def base_layout(fig: go.Figure, height: int, **kw) -> go.Figure:
     opts = dict(height=height, margin=dict(l=40, r=10, t=8, b=26), paper_bgcolor=SURF, plot_bgcolor=SURF,
                 font=FONT, showlegend=False, hoverlabel=dict(bgcolor=FG, font_color=SURF, font_size=12, bordercolor=FG),
-                dragmode=False)
+                dragmode=False, separators=separators())
     fig.update_layout(**(opts | kw))
     fig.update_xaxes(showgrid=False, zeroline=False, linecolor=LINE, tickfont=dict(family="IBM Plex Mono, monospace", size=10))
     fig.update_yaxes(gridcolor=LINE, zeroline=False, tickfont=dict(family="IBM Plex Mono, monospace", size=10))
@@ -56,20 +60,23 @@ def calendar(m: pd.DataFrame, values: pd.Series, t0: int, t1: int, cal: tuple, v
     year_tot = [vr[vr.index // 12 == y].sum() for y in years]
     zmax = float(np.nanquantile(z[z > 0], 0.97)) if np.any(z > 0) else 1
     med = [np.nanmedian(z[:, k]) for k in range(12)]
-    txt = [[f"<b>{MESES_L[k]} de {y}</b><br>{fmt(z[i, k])} focos<br>{'+' if z[i, k] >= med[k] else ''}{fmt((z[i, k] - med[k]) / med[k] * 100) if med[k] else 0}% vs. mediana do mês"
+    ML = months_long()
+    txt = [[tr("<b>{m} de {y}</b><br>{n} focos<br>{p}% vs. mediana do mês", m=ML[k], y=y, n=fmt(z[i, k]),
+               p=f"{'+' if z[i, k] >= med[k] else ''}{fmt((z[i, k] - med[k]) / med[k] * 100) if med[k] else 0}")
             if not np.isnan(z[i, k]) else "" for k in range(12)] for i, y in enumerate(years)]
 
     fig = make_subplots(rows=2, cols=2, column_widths=[0.8, 0.2], row_heights=[0.12, 0.88], shared_xaxes="columns",
                         shared_yaxes="rows", horizontal_spacing=0.02, vertical_spacing=0.015)
-    fig.add_trace(go.Bar(x=list(range(1, 13)), y=month_mean, marker_color=ACCENT, opacity=0.85, customdata=[["month", k + 1] for k in range(12)],
-                         hovertemplate="<b>%{x}</b> média de %{y:,.0f} focos/mês<br>clique para filtrar<extra></extra>"), 1, 1)
+    fig.add_trace(go.Bar(x=list(range(1, 13)), y=month_mean, marker_color=ACCENT, opacity=0.85,
+                         customdata=[["month", k + 1, m] for k, m in enumerate(months())],
+                         hovertemplate=tr("<b>%{customdata[2]}</b> média de %{y:,.0f} focos/mês<br>clique para filtrar") + "<extra></extra>"), 1, 1)
     fig.add_trace(go.Heatmap(z=z, x=list(range(1, 13)), y=years, colorscale=RAMP_SCALE, zmin=0, zmax=zmax, showscale=False, xgap=1.5, ygap=1.5,
                              text=txt, hovertemplate="%{text}<extra></extra>", customdata=[[["cell", y, k + 1] for k in range(12)] for y in years]), 2, 1)
     fig.add_trace(go.Bar(x=year_tot, y=years, orientation="h", marker_color=ACCENT, opacity=0.85, customdata=[["year", y] for y in years],
-                         hovertemplate="<b>%{y}</b>: %{x:,.0f} focos no período<br>clique para filtrar<extra></extra>"), 2, 2)
+                         hovertemplate=tr("<b>%{y}</b>: %{x:,.0f} focos no período<br>clique para filtrar") + "<extra></extra>"), 2, 2)
     base_layout(fig, 560)
     fig.update_layout(margin=dict(l=40, r=8, t=6, b=24), bargap=0.25)
-    fig.update_xaxes(tickvals=list(range(1, 13)), ticktext=MESES, side="bottom", row=2, col=1, showticklabels=True)
+    fig.update_xaxes(tickvals=list(range(1, 13)), ticktext=months(), side="bottom", row=2, col=1, showticklabels=True)
     fig.update_xaxes(showticklabels=False, row=1, col=1)
     fig.update_xaxes(showticklabels=False, showgrid=False, row=2, col=2)
     fig.update_yaxes(autorange="reversed", dtick=1, showgrid=False, row=2, col=1)
@@ -105,24 +112,24 @@ def cumulative(values: pd.Series, fy: int, y_first_full: int, y_last: int) -> tu
     cur = cum(fy)
     mn, mx = np.nanmin(hist, 0), np.nanmax(hist, 0)
     p25, p50, p75 = (np.nanquantile(hist, q, 0) for q in (0.25, 0.5, 0.75))
-    x = MESES
+    x = months()
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=x, y=mx, mode="lines", line_width=0, hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=x, y=mn, mode="lines", fill="tonexty", fillcolor="rgba(91,101,112,.13)", line_width=0, hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=x, y=p75, mode="lines", line_width=0, hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=x, y=p25, mode="lines", fill="tonexty", fillcolor=ACCENT_SOFT, line_width=0, hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=x, y=p50, mode="lines", line=dict(color=MUTED, width=1.5, dash="dash"), hovertemplate="mediana: %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=x, y=p50, mode="lines", line=dict(color=MUTED, width=1.5, dash="dash"), hovertemplate=tr("mediana: %{y:,.0f}") + "<extra></extra>"))
     fig.add_trace(go.Scatter(x=x, y=cur, mode="lines+markers", line=dict(color=ACCENT, width=3), marker=dict(size=6, color=ACCENT),
                              customdata=np.stack([mn, mx, p50], 1),
-                             hovertemplate=f"<b>{fy} até %{{x}}</b><br>%{{y:,.0f}} acumulados<br>mediana %{{customdata[2]:,.0f}} · faixa %{{customdata[0]:,.0f}}–%{{customdata[1]:,.0f}}<extra></extra>"))
+                             hovertemplate=tr("<b>{fy} até %{{x}}</b><br>%{{y:,.0f}} acumulados<br>mediana %{{customdata[2]:,.0f}} · faixa %{{customdata[0]:,.0f}}–%{{customdata[1]:,.0f}}", fy=fy) + "<extra></extra>"))
     base_layout(fig, 250)
     last = int(np.nanmax(np.where(~np.isnan(cur))[0])) if np.any(~np.isnan(cur)) else 11
     at = hist[:, last]
     rank = int((at > cur[last]).sum()) + 1
     d = (cur[last] - p50[last]) / p50[last] * 100 if p50[last] else 0
     pc = int(round((at < cur[last]).mean() * 100))
-    call = (f"<b>{fy}</b> até {MESES_L[last]}: <b>{fmt(cur[last])}</b> focos, {'+' if d >= 0 else ''}{fmt(d)}% contra a mediana. "
-            f"É o <b>{rank}º</b> maior acumulado em {len(at) + 1} temporadas (percentil {pc}).")
+    call = tr("<b>{fy}</b> até {m}: <b>{n}</b> focos, {d}% contra a mediana. É o <b>{rank}</b> maior acumulado em {tot} temporadas (percentil {pc}).",
+              fy=fy, m=months_long()[last], n=fmt(cur[last]), d=f"{'+' if d >= 0 else ''}{fmt(d)}", rank=ordinal(rank), tot=len(at) + 1, pc=pc)
     return fig, call
 
 
@@ -134,9 +141,11 @@ def monthly_anomaly(values: pd.Series, fy: int, y_first_full: int, y_last: int) 
         med = np.nanmedian(hist) if hist else np.nan
         p = (v - med) / med * 100 if med and not np.isnan(v) else np.nan
         pct.append(p)
-        txt.append(f"<b>{MESES_L[k]} de {fy}</b><br>{fmt(v) if not np.isnan(v) else '—'} focos · mediana {fmt(med) if not np.isnan(med) else '—'}<br>{'+' if p >= 0 else ''}{fmt(p)}%<br>clique para ver no mapa" if not np.isnan(p) else "")
+        txt.append(tr("<b>{m} de {y}</b><br>{v} focos · mediana {med}<br>{p}%<br>clique para ver no mapa", m=months_long()[k], y=fy,
+                      v=fmt(v) if not np.isnan(v) else "—", med=fmt(med) if not np.isnan(med) else "—", p=f"{'+' if p >= 0 else ''}{fmt(p)}")
+                   if not np.isnan(p) else "")
     cols = [CRIT if (p or 0) > 0 else GOOD for p in pct]
-    fig = go.Figure(go.Bar(x=MESES, y=pct, marker_color=cols, opacity=0.9, text=txt, hovertemplate="%{text}<extra></extra>",
+    fig = go.Figure(go.Bar(x=months(), y=pct, marker_color=cols, opacity=0.9, text=txt, hovertemplate="%{text}<extra></extra>",
                            customdata=[["cell", fy, k + 1] for k in range(12)]))
     base_layout(fig, 150)
     fig.update_yaxes(ticksuffix="%", zeroline=True, zerolinecolor=MUTED)
@@ -148,20 +157,20 @@ def harmonization(m: pd.DataFrame, has_harm: bool, viirs_year: int = 2012) -> tu
     y = m.groupby("ano")[["raw", "modis", "viirs", "harm"]].sum(min_count=1)
     fig = go.Figure()
     if has_harm and y["harm"].notna().any():
-        fig.add_trace(go.Bar(x=y.index, y=y["harm"], marker_color=RAMP[3], name="Harmonizada", hovertemplate="%{x}: %{y:,.0f} harmonizados<extra></extra>"))
-        fig.add_trace(go.Scatter(x=y.index, y=y["raw"], line=dict(color=VIIRS_C, width=2, dash="dash"), name="Bruta", hovertemplate="bruta %{y:,.0f}<extra></extra>"))
+        fig.add_trace(go.Bar(x=y.index, y=y["harm"], marker_color=RAMP[3], name=tr("Harmonizada"), hovertemplate=tr("%{x}: %{y:,.0f} harmonizados") + "<extra></extra>"))
+        fig.add_trace(go.Scatter(x=y.index, y=y["raw"], line=dict(color=VIIRS_C, width=2, dash="dash"), name=tr("Bruta"), hovertemplate=tr("bruta %{y:,.0f}") + "<extra></extra>"))
     else:
         fig.add_trace(go.Bar(x=y.index, y=y["modis"], marker_color=MODIS_C, name="MODIS", hovertemplate="%{x} · MODIS: %{y:,.0f}<extra></extra>"))
         fig.add_trace(go.Bar(x=y.index, y=y["viirs"], marker_color=VIIRS_C, name="VIIRS", hovertemplate="%{x} · VIIRS: %{y:,.0f}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=y.index, y=y["modis"], line=dict(color=MODIS_C, width=2), name="Só MODIS", hovertemplate="só MODIS %{y:,.0f}<extra></extra>"))
+    fig.add_trace(go.Scatter(x=y.index, y=y["modis"], line=dict(color=MODIS_C, width=2), name=tr("Só MODIS"), hovertemplate=tr("só MODIS %{y:,.0f}") + "<extra></extra>"))
     base_layout(fig, 230, barmode="stack")
     fig.add_vline(x=viirs_year - 0.5, line=dict(color=ACCENT, dash="dash", width=1.5))
-    fig.add_annotation(x=viirs_year - 0.4, y=1, yref="paper", text="VIIRS entra", showarrow=False, xanchor="left", font=dict(color=ACCENT, size=10))
+    fig.add_annotation(x=viirs_year - 0.4, y=1, yref="paper", text=tr("VIIRS entra"), showarrow=False, xanchor="left", font=dict(color=ACCENT, size=10))
     r0, r1 = y["raw"].get(viirs_year - 1, 0), y["raw"].get(viirs_year, 0)
     jump = (r1 - r0) / r0 * 100 if r0 else 0
-    note = f"De {viirs_year - 1} para {viirs_year} a soma bruta salta <b>{'+' if jump >= 0 else ''}{fmt(jump)}%</b>, só pela entrada do VIIRS."
+    note = tr("De {a} para {b} a soma bruta salta <b>{j}%</b>, só pela entrada do VIIRS.", a=viirs_year - 1, b=viirs_year, j=f"{'+' if jump >= 0 else ''}{fmt(jump)}")
     if not has_harm:
-        note += " A série harmonizada aparece aqui quando o time de dados entregar a coluna <code>peso_harm</code>."
+        note += " " + tr("A série harmonizada aparece aqui quando o time de dados entregar a coluna <code>peso_harm</code>.")
     return fig, note
 
 
@@ -169,9 +178,9 @@ def harmonization(m: pd.DataFrame, has_harm: bool, viirs_year: int = 2012) -> tu
 def timeline(values: pd.Series, t0: int, t1: int, cal_ok) -> go.Figure:
     x = values.index.to_numpy()
     on = [(t0 <= k <= t1) and cal_ok(k) for k in x]
-    labels = [f"{MESES_L[k % 12]} de {k // 12}" for k in x]
+    labels = [tr("{m} de {y}", m=months_long()[k % 12], y=k // 12) for k in x]
     fig = go.Figure(go.Bar(x=x, y=values.to_numpy(), marker_color=[ACCENT if o else "#c9cfd6" for o in on], marker_line_width=0,
-                           customdata=labels, hovertemplate="%{customdata}: %{y:,.0f} focos<extra></extra>"))
+                           customdata=labels, hovertemplate=tr("%{customdata}: %{y:,.0f} focos") + "<extra></extra>"))
     years = range(x.min() // 12 + 1, x.max() // 12 + 1)
     base_layout(fig, 110, dragmode="select", selectdirection="h", bargap=0.1)
     fig.update_layout(margin=dict(l=8, r=8, t=4, b=20), newselection=dict(line=dict(color=ACCENT)))

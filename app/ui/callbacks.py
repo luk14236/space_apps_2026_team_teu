@@ -10,9 +10,10 @@ import plotly.graph_objects as go
 from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
 
 from ..data.repository import Filtro, Repository
+from ..i18n import months, months_long, tr
 from . import figures as F
 
-MESES, MESES_L, fmt, fmt1, fmtk = F.MESES, F.MESES_L, F.fmt, F.fmt1, F.fmtk
+fmt, fmt1, fmtk = F.fmt, F.fmt1, F.fmtk
 
 
 def filtro(st: dict, with_time: bool = True) -> Filtro:
@@ -22,7 +23,7 @@ def filtro(st: dict, with_time: bool = True) -> Filtro:
 
 
 def mlabel(mi: int) -> str:
-    return f"{MESES[mi % 12]}/{mi // 12}"
+    return f"{months()[mi % 12]}/{mi // 12}"
 
 
 def register(app, repo: Repository) -> None:
@@ -31,9 +32,9 @@ def register(app, repo: Repository) -> None:
     # ------------------------------------------------------------ helpers that depend on repo
     def scope_name(st) -> str:
         if st["kind"] == "shape":
-            return "Área desenhada"
+            return tr("Área desenhada")
         if st["kind"] == "all":
-            return "América do Sul"
+            return tr("América do Sul")
         u = geo.unit(st["kind"], st["uid"])
         return u.nome if u else st["uid"]
 
@@ -206,7 +207,7 @@ def register(app, repo: Repository) -> None:
         ok = cal_ok(st)
 
         # breadcrumb + chips
-        crumbs = [html.Button("América do Sul", id={"type": "crumb", "k": "all", "id": "all"}, n_clicks=0)]
+        crumbs = [html.Button(tr("América do Sul"), id={"type": "crumb", "k": "all", "id": "all"}, n_clicks=0)]
         k, uid = st["kind"], st["uid"]
         if k in ("prov", "dep") or (k == "pais" and uid == "ARG"):
             crumbs += [" › ", html.Button("Argentina", id={"type": "crumb", "k": "pais", "id": "ARG"}, n_clicks=0)]
@@ -218,36 +219,38 @@ def register(app, repo: Repository) -> None:
         elif k == "pais":
             crumbs += [" › ", html.Span(geo.paises[uid].nome, className="cur")]
         elif k == "shape":
-            crumbs += [" › ", html.Span("Área desenhada", className="cur")]
+            crumbs += [" › ", html.Span(tr("Área desenhada"), className="cur")]
         chips = []
         if k == "shape":
-            chips.append(("shape", f"Área desenhada · {fmt(scope_area(st))} km²"))
+            chips.append(("shape", tr("Área desenhada · {a} km²", a=fmt(scope_area(st)))))
         if st["t0"] != repo.mi0 or st["t1"] != repo.mi1:
             chips.append(("time", f"{mlabel(st['t0'])} – {mlabel(st['t1'])}"))
         if st["cal"]:
             c = st["cal"]
-            chips.append(("cal", f"Calendário: {MESES[c[2]-1]}/{c[1]}" if c[0] == "cell" else f"Só {MESES_L[c[1]-1]}" if c[0] == "month" else f"Só {c[1]}"))
+            chips.append(("cal", tr("Calendário: {m}", m=f"{months()[c[2]-1]}/{c[1]}") if c[0] == "cell" else tr("Só {m}", m=months_long()[c[1]-1] if c[0] == "month" else c[1])))
         if set(st["sats"]) != set(repo.sats):
-            chips.append(("sats", "Satélites: " + ", ".join(sorted(st["sats"])) if st["sats"] else "Nenhum satélite"))
-        chip_el = [html.Span([t, html.Button("×", id={"type": "chip", "x": x}, n_clicks=0, title="Remover filtro")], className="chip") for x, t in chips] \
-            or [html.Span("Clique no mapa para descer de nível (país › província › departamento › grade) ou desenhe uma área.", className="note")]
+            chips.append(("sats", tr("Satélites: {s}", s=", ".join(sorted(st["sats"]))) if st["sats"] else tr("Nenhum satélite")))
+        chip_el = [html.Span([t, html.Button("×", id={"type": "chip", "x": x}, n_clicks=0, title=tr("Remover filtro"))], className="chip") for x, t in chips] \
+            or [html.Span(tr("Clique no mapa para descer de nível (país › província › departamento › grade) ou desenhe uma área."), className="note")]
 
         # KPIs
         sm = summary(st)
         cls = "flat" if abs(sm["pct"]) < 15 else ("up" if sm["pct"] > 0 else "down")
-        lbl = {"flat": "perto da mediana", "up": "acima da mediana", "down": "abaixo da mediana"}[cls]
-        serie_lbl = {"harm": "harmonizados", "modis": "só MODIS", "raw": "MODIS + VIIRS (bruto)"}[st["serie"] if (st["serie"] != "harm" or repo.has_harm) else "raw"]
+        lbl = tr({"flat": "perto da mediana", "up": "acima da mediana", "down": "abaixo da mediana"}[cls])
+        serie_lbl = tr({"harm": "harmonizados", "modis": "só MODIS", "raw": "MODIS + VIIRS (bruto)"}[st["serie"] if (st["serie"] != "harm" or repo.has_harm) else "raw"])
         kpis = [
-            html.Div([html.Span("Focos no período", className="k"), html.Span(fmtk(sm["tot"]), className="v"), html.Span(f"{fmt1(sm['dens'])} por 1.000 km² · {serie_lbl}", className="d")], className="kpi"),
-            html.Div([html.Span("Pico da temporada", className="k"), html.Span(MESES[sm["pm"]], className="v"), html.Span(f"{fmt1(sm['pm_share'])}% dos focos", className="d")], className="kpi"),
-            html.Div([html.Span("Ano recorde", className="k"), html.Span(str(sm["py"]), className="v"), html.Span(f"{fmtk(sm['pyv'])} focos", className="d")], className="kpi"),
-            html.Div([html.Span(f"{MESES[sm['ref'] % 12]}/{sm['ref'] // 12} vs. mediana", className="k"), html.Span(f"{'+' if sm['pct'] > 0 else ''}{fmt(sm['pct'])}%", className="v"),
+            html.Div([html.Span(tr("Focos no período"), className="k"), html.Span(fmtk(sm["tot"]), className="v"),
+                      html.Span(tr("{d} por 1.000 km² · {s}", d=fmt1(sm['dens']), s=serie_lbl), className="d")], className="kpi"),
+            html.Div([html.Span(tr("Pico da temporada"), className="k"), html.Span(months()[sm["pm"]], className="v"),
+                      html.Span(tr("{p}% dos focos", p=fmt1(sm['pm_share'])), className="d")], className="kpi"),
+            html.Div([html.Span(tr("Ano recorde"), className="k"), html.Span(str(sm["py"]), className="v"), html.Span(tr("{n} focos", n=fmtk(sm['pyv'])), className="d")], className="kpi"),
+            html.Div([html.Span(tr("{m} vs. mediana", m=f"{months()[sm['ref'] % 12]}/{sm['ref'] // 12}"), className="k"), html.Span(f"{'+' if sm['pct'] > 0 else ''}{fmt(sm['pct'])}%", className="v"),
                       html.Span(lbl, className=f"pill {cls}")], className="kpi"),
         ]
 
         calfig = F.calendar(m, s, st["t0"], st["t1"], tuple(st["cal"]))
         cal_leg = [html.Span([html.I(className="sw", style={"background": c}), t]) for c, t in F.calendar_legend(s)] + \
-                  [html.Span([html.I(className="ln dash acc"), "entrada do VIIRS (2012)"])]
+                  [html.Span([html.I(className="ln dash acc"), tr("entrada do VIIRS (2012)")])]
         harmfig, harm_note = F.harmonization(m, repo.has_harm)
         fy = st["fy"] or (st["cal"][1] if st["cal"] and st["cal"][0] in ("cell", "year") else st["t1"] // 12)
         fy = min(max(fy, repo.y0 + 1), repo.y1)
@@ -259,47 +262,47 @@ def register(app, repo: Repository) -> None:
         tl_total = sum(v for kk, v in s.items() if st["t0"] <= kk <= st["t1"] and ok(kk))
         return (crumbs, scope_name(st), chip_el, kpis,
                 calfig, cal_leg, harmfig, dcc.Markdown(harm_note, dangerously_allow_html=True),
-                cumfig, dcc.Markdown(call, dangerously_allow_html=True), f"{fy} contra o histórico", anomfig,
-                rank_title, rows, tl, f"{mlabel(st['t0'])} – {mlabel(st['t1'])}", f"{fmt(tl_total)} focos",
-                not st["playing"], "❚❚ Pausar" if st["playing"] else "▶ Reproduzir",
-                "main " + st["mode"], "Expandir mapa" if st["mode"] == "dash" else "Voltar ao painel")
+                cumfig, dcc.Markdown(call, dangerously_allow_html=True), tr("{fy} contra o histórico", fy=fy), anomfig,
+                rank_title, rows, tl, f"{mlabel(st['t0'])} – {mlabel(st['t1'])}", tr("{n} focos", n=fmt(tl_total)),
+                not st["playing"], tr("❚❚ Pausar") if st["playing"] else tr("▶ Reproduzir"),
+                "main " + st["mode"], tr("Expandir mapa") if st["mode"] == "dash" else tr("Voltar ao painel"))
 
     def ranking(st):
         f = filtro(st)
         k, uid = st["kind"], st["uid"]
         if k == "all":
-            df, kind, title = repo.territories("pais", f), "pais", "Países com mais focos"
+            df, kind, title = repo.territories("pais", f), "pais", tr("Países com mais focos")
             names = {u: geo.paises[u].nome for u in df["id"]}; areas = {u: geo.paises[u].area_km2 for u in df["id"]}
         elif k == "pais" and uid == "ARG":
-            df, kind, title = repo.territories("prov", f), "prov", "Províncias com mais focos"
+            df, kind, title = repo.territories("prov", f), "prov", tr("Províncias com mais focos")
             names = {u: geo.provincias[u].nome for u in df["id"] if u in geo.provincias}; areas = {u: geo.provincias[u].area_km2 for u in names}
         elif k == "prov":
-            df, kind, title = repo.territories("dep", f, uid), "dep", "Departamentos com mais focos"
+            df, kind, title = repo.territories("dep", f, uid), "dep", tr("Departamentos com mais focos")
             names = {u: geo.departamentos[u].nome for u in df["id"] if u in geo.departamentos}; areas = {u: geo.departamentos[u].area_km2 for u in names}
         else:
             deg = 0.05 if k in ("dep", "shape") else 0.25
             g = repo.grid(f, deg)
             if g.empty:
-                return "Células mais quentes", [html.Li("Nenhum foco com os filtros atuais.", className="note")]
+                return tr("Células mais quentes"), [html.Li(tr("Nenhum foco com os filtros atuais."), className="note")]
             g = g.sort_values("n", ascending=False).head(10)
             mx = g["n"].max()
             rows = []
             for i, r in enumerate(g.itertuples()):
                 lat, lon = (r.gy + 0.5) * deg, (r.gx + 0.5) * deg
                 km2 = deg * 111.32 * np.cos(np.radians(lat)) * deg * 110.57
-                pm = MESES_L[int(r.pico_mes) - 1] if pd.notna(r.pico_mes) else "—"
+                pm = months_long()[int(r.pico_mes) - 1] if pd.notna(r.pico_mes) else "—"
                 rows.append(html.Li(html.Button([html.Span(str(i + 1), className="n"),
                                                  html.Span([f"{abs(lat):.2f}°{'S' if lat < 0 else 'N'} {abs(lon):.2f}°{'W' if lon < 0 else 'E'}",
-                                                            html.Small(f"pico em {pm}"), html.Span(className="bar", style={"width": f"{r.n / mx * 100:.1f}%"})], className="nm"),
+                                                            html.Small(tr("pico em {m}", m=pm)), html.Span(className="bar", style={"width": f"{r.n / mx * 100:.1f}%"})], className="nm"),
                                                  html.Span(fmt(r.n), className="val"), html.Span(fmt1(r.n / km2 * 1000), className="den")],
                                                 id={"type": "rank", "k": "cell", "id": f"{r.gx}:{r.gy}:{deg}"}, n_clicks=0)))
-            return f"Células mais quentes ({str(deg).replace('.', ',')}°)", rows
+            return tr("Células mais quentes ({d}°)", d=degs(deg)), rows
         df = df[df["id"].isin(names)].sort_values("n", ascending=False).head(12)
         if df.empty:
-            return title, [html.Li("Nenhum foco com os filtros atuais.", className="note")]
+            return title, [html.Li(tr("Nenhum foco com os filtros atuais."), className="note")]
         mx = df["n"].max()
         rows = [html.Li(html.Button([html.Span(str(i + 1), className="n"),
-                                     html.Span([names[r.id], html.Small(f"pico em {MESES_L[int(r.pico_mes) - 1]}") if pd.notna(r.pico_mes) else None,
+                                     html.Span([names[r.id], html.Small(tr("pico em {m}", m=months_long()[int(r.pico_mes) - 1])) if pd.notna(r.pico_mes) else None,
                                                 html.Span(className="bar", style={"width": f"{r.n / mx * 100:.1f}%"})], className="nm"),
                                      html.Span(fmt(r.n), className="val"), html.Span(fmt1(r.n / areas[r.id] * 1000), className="den")],
                                     id={"type": "rank", "k": kind, "id": r.id}, n_clicks=0, className="cur" if (k == kind and uid == r.id) else ""))
@@ -309,7 +312,7 @@ def register(app, repo: Repository) -> None:
     # ------------------------------------------------------------ map: the level of detail follows the zoom
     # zoom < 3.6 countries · < 5.6 provinces · < 7 departments · < 9 grid of cells · >= 9 individual hotspots
     LEVELS = [(3.6, "pais"), (5.6, "prov"), (7.0, "dep"), (9.0, "grid"), (99, "pts")]
-    LEVEL_LBL = {"pais": "países", "prov": "províncias", "dep": "departamentos", "grid": "grade de focos", "pts": "focos individuais"}
+    LEVEL_LBL = {"pais": "países", "prov": "províncias", "dep": "departamentos", "grid": "grade de focos", "pts": "focos individuais"}  # tr() at use
     MAP_PX = {"dash": (580, 560), "map": (900, 640)}
 
     def scope_key(st) -> str:
@@ -392,8 +395,9 @@ def register(app, repo: Repository) -> None:
                 n = float(dfi["n"].get(u.id, 0)) if len(dfi) else 0.0
                 d = n / max(u.area_km2, 1) * 1000
                 pm = dfi["pico_mes"].get(u.id) if len(dfi) else None
-                txt = (f"<b>{u.nome}</b><br>{fmt(n)} focos · {fmt1(d)} por 1.000 km²" + (f"<br>Pico: {MESES_L[int(pm) - 1]}" if pm is not None and pd.notna(pm) else "")
-                       + "<br><i>clique para selecionar · aproxime para ver mais detalhes</i>")
+                txt = (tr("<b>{u}</b><br>{n} focos · {d} por 1.000 km²", u=u.nome, n=fmt(n), d=fmt1(d))
+                       + (tr("<br>Pico: {m}", m=months_long()[int(pm) - 1]) if pm is not None and pd.notna(pm) else "")
+                       + tr("<br><i>clique para selecionar · aproxime para ver mais detalhes</i>"))
                 ids.append(u.id); z.append(d if highlight else 0); cd.append([level, u.id, txt])
             vals = [v for v in z if v > 0]
             zmax = float(np.quantile(vals, 0.95)) if vals else 1
@@ -405,16 +409,16 @@ def register(app, repo: Repository) -> None:
         tf = Filtro(kind="all", uid="all", t0=f.t0, t1=f.t1, cal=f.cal, sats=f.sats, serie=f.serie)  # map shows everything; the selection is outlined
         zmax = units_trace("pais", geo.paises.values(), repo.territories("pais", tf), "países", lvl == "pais", 0.75 if lvl == "pais" else 0.45)
         if lvl == "pais":
-            legend = ramp_legend(zmax, "Focos por 1.000 km²")
+            legend = ramp_legend(zmax, tr("Focos por 1.000 km²"))
         if lvl in ("prov", "dep", "grid", "pts") and visible(geo.paises["ARG"].bbox):
             zp = units_trace("prov", geo.provincias.values(), repo.territories("prov", tf) if lvl == "prov" else empty, "províncias", lvl == "prov",
                              0.85 if lvl == "prov" else 0.35, line_w=1.0)
             if lvl == "prov":
-                legend = ramp_legend(zp, "Focos por 1.000 km²")
+                legend = ramp_legend(zp, tr("Focos por 1.000 km²"))
         if lvl == "dep":
             deps = [d for d in geo.departamentos.values() if visible(d.bbox)]
             zd = units_trace("dep", deps, repo.territories("dep", tf), "departamentos", True, 0.85, line_w=0.5)
-            legend = ramp_legend(zd, "Focos por 1.000 km² (departamentos)")
+            legend = ramp_legend(zd, tr("Focos por 1.000 km² (departamentos)"))
         if lvl in ("grid", "pts"):
             g = repo.grid_view(tf, deg_for(zoom), tuple(bbox))
             deg = g.attrs.get("deg", deg_for(zoom))
@@ -429,14 +433,14 @@ def register(app, repo: Repository) -> None:
                     lat = (r.gy + 0.5) * deg
                     km2 = deg * 111.32 * np.cos(np.radians(lat)) * deg * 110.57
                     sats = " · ".join(f"{s_} {int(getattr(r, s_))}" for s_ in repo.sats if hasattr(r, s_) and getattr(r, s_))
-                    pm = MESES_L[int(r.pico_mes) - 1] if pd.notna(r.pico_mes) else "—"
+                    pm = months_long()[int(r.pico_mes) - 1] if pd.notna(r.pico_mes) else "—"
                     cd.append(["cell", int(r.gx), int(r.gy), deg,
-                               f"<b>Célula de {str(deg).replace('.', ',')}° (~{fmt(km2)} km²)</b><br>{fmt(r.n)} focos · pico em {pm}<br>"
-                               f"Último: {mlabel(int(r.ultimo_mi))} · FRP máx. {fmt1(r.frp_max)} MW<br>{sats}<br><i>clique para analisar a célula</i>"])
-                tr = F.choropleth(gj, [ft["id"] for ft in gj["features"]], g["n"].tolist(), cd, "grade", opacity=0.55 if lvl == "pts" else 0.8, line_w=0, zmax=zmax_g)
-                tr.hovertemplate = "%{customdata[4]}<extra></extra>"
-                traces.append(tr)
-                legend = ramp_legend(zmax_g, f"Focos por célula de {str(deg).replace('.', ',')}°", per_area=False)
+                               tr("<b>Célula de {g}° (~{a} km²)</b><br>{n} focos · pico em {m}<br>Último: {u} · FRP máx. {f} MW<br>{s}<br><i>clique para analisar a célula</i>",
+                                  g=degs(deg), a=fmt(km2), n=fmt(r.n), m=pm, u=mlabel(int(r.ultimo_mi)), f=fmt1(r.frp_max), s=sats)])
+                trace = F.choropleth(gj, [ft["id"] for ft in gj["features"]], g["n"].tolist(), cd, "grade", opacity=0.55 if lvl == "pts" else 0.8, line_w=0, zmax=zmax_g)
+                trace.hovertemplate = "%{customdata[4]}<extra></extra>"
+                traces.append(trace)
+                legend = ramp_legend(zmax_g, tr("Focos por célula de {g}°", g=degs(deg)), per_area=False)
         if lvl == "pts":
             p, total = repo.points_view(tf, tuple(bbox))
             for sat, grp in p.groupby("satelite"):
@@ -444,10 +448,10 @@ def register(app, repo: Repository) -> None:
                                             marker=dict(size=7, color=F.SAT_C.get(sat, "#888"), opacity=0.9),
                                             customdata=np.stack([np.full(len(grp), "pt"), grp["ts"].dt.strftime("%d/%m/%Y %H:%M"), grp["frp"].round(1),
                                                                  np.full(len(grp), sat), grp["sensor"]], 1),
-                                            hovertemplate="<b>Foco · %{customdata[3]} (%{customdata[4]})</b><br>%{customdata[1]} UTC<br>FRP %{customdata[2]} MW<br>%{lat:.4f}, %{lon:.4f}<extra></extra>"))
+                                            hovertemplate=tr("<b>Foco · %{customdata[3]} (%{customdata[4]})</b><br>%{customdata[1]} UTC<br>FRP %{customdata[2]} MW<br>%{lat:.4f}, %{lon:.4f}") + "<extra></extra>"))
             legend = legend + [html.Div([html.Span([html.I(className="dot", style={"background": c}), s_]) for s_, c in F.SAT_C.items() if s_ in repo.sats], className="legend")]
             if total > len(p):
-                legend.append(html.Div(f"Mostrando os {fmt(len(p))} focos mais recentes de {fmt(total)} na tela. Aproxime ou filtre o período para ver todos.", className="note"))
+                legend.append(html.Div(tr("Mostrando os {n} focos mais recentes de {t} na tela. Aproxime ou filtre o período para ver todos.", n=fmt(len(p)), t=fmt(total)), className="note"))
         if st.get("tool", "pan") != "pan":  # invisible lattice so box/lasso selection always fires
             gx, gy = np.meshgrid(np.linspace(bbox[0], bbox[2], 20), np.linspace(bbox[1], bbox[3], 20))
             traces.append(go.Scattermap(lon=gx.ravel(), lat=gy.ravel(), mode="markers", marker=dict(size=1, opacity=0), hoverinfo="skip", name="sel"))
@@ -463,8 +467,11 @@ def register(app, repo: Repository) -> None:
         fig.update_layout(map=dict(style="carto-positron", center=center, zoom=start_zoom, layers=layers),
                           margin=dict(l=0, r=0, t=0, b=0), showlegend=False, dragmode=st.get("tool", "pan"),
                           uirevision=scope_key(st), paper_bgcolor="#d9e2ea",
-                          hoverlabel=dict(bgcolor=F.FG, font_color="#fff", font_size=12), clickmode="event")
-        return fig, legend, f"Detalhe: {LEVEL_LBL[lvl]}" + (" · automático pelo zoom" if layer == "auto" else "")
+                          hoverlabel=dict(bgcolor=F.FG, font_color="#fff", font_size=12), clickmode="event", separators=F.separators())
+        return fig, legend, tr("Detalhe: {l}", l=tr(LEVEL_LBL[lvl])) + (tr(" · automático pelo zoom") if layer == "auto" else "")
+
+    def degs(deg) -> str:
+        return F.num(deg, 3).rstrip("0").rstrip(",.")
 
     def ramp_legend(zmax, title, per_area=True):
         labels = [fmt1(zmax * (i + 1) / 6) if zmax * (i + 1) / 6 < 10 else fmt(zmax * (i + 1) / 6) for i in range(5)] + ["+"]
@@ -476,4 +483,4 @@ def register(app, repo: Repository) -> None:
     def download(n, st):
         df = repo.export(filtro(st))
         name = scope_name(st).replace(" ", "_").lower()
-        return dcc.send_data_frame(df.to_csv, f"focos_{name}_{mlabel(st['t0']).replace('/', '-')}_{mlabel(st['t1']).replace('/', '-')}.csv", index=False)
+        return dcc.send_data_frame(df.to_csv, f"{tr('focos')}_{name}_{mlabel(st['t0']).replace('/', '-')}_{mlabel(st['t1']).replace('/', '-')}.csv", index=False)

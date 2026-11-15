@@ -187,3 +187,10 @@ a.btn{text-decoration:none;color:inherit;width:max-content}
 .scard.s-XL{grid-column:span 12}
 .sala .foot{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px;padding:6px 2px}
 .sala .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.lnk{display:inline-block;width:18px;height:0;vertical-align:middle;margin-right:4px}
+/* language switch */
+.langsw{display:inline-flex;border:1px solid var(--line,#d9dde2);border-radius:999px;overflow:hidden;font:600 11.5px "IBM Plex Mono",monospace;flex:none}
+.langsw a{padding:4px 9px;text-decoration:none;color:var(--muted,#5b6570);background:transparent}
+.langsw a.on{background:var(--fg,#1a1f25);color:#fff}
+.langsw a:not(.on):hover{color:var(--fg,#1a1f25)}
+.nav{display:flex;align-items:center;gap:10px}

@@ -5,11 +5,13 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..i18n import tr
+
 
 @dataclass
 class Unit:
     id: str
-    nome: str
+    nome_pt: str
     nivel: str  # pais | provincia | departamento
     area_km2: float
     centroid: tuple[float, float]
@@ -17,6 +19,11 @@ class Unit:
     parent: str | None = None
     regiao: str | None = None
     feature: dict = field(repr=False, default_factory=dict)
+
+    @property
+    def nome(self) -> str:
+        """Country names are translated; Argentine provinces and departments are proper names."""
+        return tr(self.nome_pt) if self.nivel == "pais" else self.nome_pt
 
 
 class Geo:
@@ -39,7 +46,7 @@ class Geo:
         out = {}
         for f in fc["features"]:
             p = f["properties"]
-            out[f["id"]] = Unit(id=f["id"], nome=p["nome"], nivel=p["nivel"], area_km2=p["area_km2"],
+            out[f["id"]] = Unit(id=f["id"], nome_pt=p["nome"], nivel=p["nivel"], area_km2=p["area_km2"],
                                 centroid=tuple(p["centroid"]), bbox=tuple(p["bbox"]),
                                 parent=p.get(parent_key) if parent_key else None, regiao=p.get("regiao"), feature=f)
         return out
@@ -52,8 +59,8 @@ class Geo:
         return {"type": "FeatureCollection", "features": [f for f in self.fc[kind]["features"] if f["id"] in ids]}
 
     def search_options(self) -> list[dict]:
-        opts = [{"label": f"{u.nome} (país)", "value": f"pais:{u.id}"} for u in self.paises.values()]
-        opts += [{"label": f"{u.nome} (província, Argentina)", "value": f"prov:{u.id}"} for u in self.provincias.values()]
+        opts = [{"label": tr("{n} (país)", n=u.nome), "value": f"pais:{u.id}"} for u in self.paises.values()]
+        opts += [{"label": tr("{n} (província, Argentina)", n=u.nome), "value": f"prov:{u.id}"} for u in self.provincias.values()]
         opts += [{"label": f"{u.nome} ({self.provincias[u.parent].nome})", "value": f"dep:{u.id}"}
                  for u in self.departamentos.values() if u.parent in self.provincias]
         return sorted(opts, key=lambda o: o["label"])

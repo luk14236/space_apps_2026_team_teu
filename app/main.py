@@ -7,6 +7,7 @@ from . import config
 from .admin import create_blueprint
 from .data.geo import Geo
 from .data.repository import Repository
+from .i18n import lang, register_routes, tr
 from .ui.callbacks import register
 from .ui.layout import build_layout, empty_layout, root_layout
 from .ui.sala import register_sala, sala_layout
@@ -18,13 +19,17 @@ def create_app() -> Dash:
     app = Dash(__name__, title="Calendário de Focos", update_title=None, suppress_callback_exceptions=True)
     app.server.secret_key = config.SECRET_KEY
     app.server.register_blueprint(create_blueprint(lambda: repo))
+    register_routes(app.server)  # /lang/pt and /lang/en
     app.layout = root_layout
 
-    @app.callback(Output("page", "children"), Input("url", "pathname"))
+    @app.callback(Output("page", "children"), Output("doc", "data"), Input("url", "pathname"))
     def route(path):
         if path == "/sala":
-            return sala_layout(repo)
-        return build_layout(repo) if repo.ready else empty_layout()
+            return sala_layout(repo), {"title": tr("Sala de Situação"), "lang": lang()}
+        return (build_layout(repo) if repo.ready else empty_layout()), {"title": tr("Calendário de Focos"), "lang": lang()}
+
+    app.clientside_callback("""function(d){if(d){document.title=d.title;document.documentElement.lang=d.lang==='en'?'en':'pt-BR';}return '';}""",
+                            Output("doc-sink", "children"), Input("doc", "data"), prevent_initial_call=True)
 
     register(app, repo)
     register_sala(app, repo)
